@@ -358,7 +358,7 @@ async function loadLeaderboard() {
       <td>${row.winrate}%</td>
       <td>${row.champion_pool_size}</td>
       <td><span class="score-pill ${scoreClass(row.css_score)}">${row.css_score}</span></td>
-      <td>${row.percentile_rank}</td>
+      <td>${row.percentile_rank == null ? '<span class="muted" title="Cohort too small (<10 players) for a meaningful percentile">—</span>' : 'P'+row.percentile_rank}</td>
       <td>
         <span class="star ${watched?'active':''}" data-puuid="${row.puuid}">${watched?'★':'☆'}</span>
         <button data-puuid="${row.puuid}" class="secondary view-player">View</button>

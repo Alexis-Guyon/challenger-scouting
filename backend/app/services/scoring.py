@@ -420,13 +420,18 @@ def score_all(db: Session, min_games: int) -> int:
         a.css_score = css_final
         by_pr[(a.patch, a.role)].append((a, css_final))
 
-    # Percentile
+    # Percentile rank within (patch, role) cohort.
+    # Guard: with <10 players, the percentile is meaningless (a 2-player
+    # cohort would trivially assign P100 to whichever has higher CSS, even
+    # if their CSS is mediocre). In that case we mark the percentile as
+    # None — the UI then renders a "—" placeholder.
+    MIN_COHORT_FOR_PERCENTILE = 10
     for (patch, role), items in by_pr.items():
         items.sort(key=lambda x: x[1])
         total = len(items)
-        if total <= 1:
+        if total < MIN_COHORT_FOR_PERCENTILE:
             for a, _ in items:
-                a.percentile_rank = 50.0
+                a.percentile_rank = None
         else:
             for rank, (a, _) in enumerate(items):
                 a.percentile_rank = round(100 * rank / (total - 1), 1)

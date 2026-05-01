@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import desc
+from sqlalchemy import desc, exists
 from sqlalchemy.orm import Session
 
 from ..auth import get_current_user
@@ -364,6 +364,17 @@ def list_players(
         q = q.filter(Player.summoner_name != "(unknown)")
         q = q.filter(Player.summoner_name != "")
         q = q.filter(Player.summoner_name.like("%#%"))
+
+    # Require an actual ranked SoloQ tier on file. Without this, players we
+    # ingested but never got a rank snapshot for (account de-ranked / new
+    # account / API hiccup) sneak onto the Challenger ladder with empty
+    # Tier / LP columns.
+    q = q.filter(
+        exists().where(
+            (RankSnapshot.puuid == Player.puuid)
+            & RankSnapshot.tier.isnot(None)
+        )
+    )
 
     if pro_only:
         q = q.filter(PlayerMeta.is_pro == True)  # noqa: E712

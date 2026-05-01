@@ -43,6 +43,63 @@ def _normalize_name(s: str) -> str:
     return s
 
 
+def _candidate_normalizations(s: str) -> list[str]:
+    """
+    Return every plausible normalized form of a Riot in-game name.
+    Pro players often prefix their SoloQ name with a team tag ("G2 Hans Sama")
+    or a smurf marker ("KC NEXT ADKING"), and Leaguepedia stores only the
+    canonical IGN ("hanssama", "adking"). We try multiple strip strategies
+    so the team-prefixed name still matches.
+    """
+    if not s:
+        return []
+    base = s.split("#")[0].strip()
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def push(x: str):
+        n = re.sub(r"[^a-z0-9]", "", x.lower())
+        if n and n not in seen:
+            seen.add(n)
+            out.append(n)
+
+    # 1. Full name as-is
+    push(base)
+
+    # 2. Strip role/community prefixes
+    no_prefix = re.sub(r"^(twtv|trainer|coach|sub)\s+", "", base, flags=re.I).strip()
+    if no_prefix != base:
+        push(no_prefix)
+
+    # 3. Strip leading TEAM TAG (1-5 alnum chars followed by space).
+    #    Examples: "G2 Hans Sama" -> "Hans Sama", "MKOI Skewmond" -> "Skewmond"
+    m = re.match(r"^([A-Z0-9]{1,5})\s+(.+)$", base)
+    if m:
+        push(m.group(2))
+        # Also try team tag + everything after first word (some pros use 2-word IGNs)
+        push(m.group(2).split(" ")[-1])
+
+    # 4. Strip trailing markers: "NEXT", "academy", numeric suffixes, "smurf"
+    no_suffix = re.sub(r"\s+(NEXT|academy|smurf|alt|main|\d+)$", "", base, flags=re.I).strip()
+    if no_suffix != base:
+        push(no_suffix)
+
+    # 5. Combination: strip prefix AND suffix
+    if m:
+        post_prefix = m.group(2)
+        cleaned = re.sub(r"\s+(NEXT|academy|smurf|alt|main|\d+)$", "", post_prefix, flags=re.I).strip()
+        push(cleaned)
+        # Also the last word of the cleaned remainder
+        push(cleaned.split(" ")[-1])
+
+    # 6. Just the last word (handles "Some Long Name SomePro" -> "SomePro")
+    parts = base.split(" ")
+    if len(parts) > 1:
+        push(parts[-1])
+
+    return out
+
+
 def _calc_age(birthdate: str | None) -> Optional[int]:
     if not birthdate:
         return None
@@ -160,8 +217,11 @@ def sync_players_with_lookup(db: Session, lookup: dict[str, dict]) -> dict:
     matched = unmatched = fa_count = 0
     players = db.query(Player).all()
     for p in players:
-        key = _normalize_name(p.summoner_name or "")
-        rec = lookup.get(key)
+        rec = None
+        for candidate in _candidate_normalizations(p.summoner_name or ""):
+            if candidate in lookup:
+                rec = lookup[candidate]
+                break
 
         meta = db.get(PlayerMeta, p.puuid)
         if not meta:

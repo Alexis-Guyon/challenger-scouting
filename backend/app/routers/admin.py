@@ -163,6 +163,66 @@ def sync_leaguepedia(background: BackgroundTasks):
     return {"job_id": job_id, "status": "started"}
 
 
+def _resolve_unknown_names_job(job_id: str, max_resolve: int):
+    """Background job: call Riot account-v1 for every stub player and persist real Riot IDs."""
+    import asyncio
+
+    from ..models import Player as _Player
+    from ..services.riot_client import RiotClient
+
+    async def _runner():
+        db = SessionLocal()
+        resolved = 0
+        attempted = 0
+        try:
+            stubs = (
+                db.query(_Player)
+                .filter(
+                    (_Player.summoner_name == "(unknown)")
+                    | (_Player.summoner_name == "")
+                    | (~_Player.summoner_name.like("%#%"))
+                )
+                .limit(max_resolve)
+                .all()
+            )
+            _jobs[job_id]["total"] = len(stubs)
+            async with RiotClient() as client:
+                for p in stubs:
+                    attempted += 1
+                    try:
+                        acct = await client.account_by_puuid(p.puuid)
+                        if acct and acct.get("gameName"):
+                            tl = acct.get("tagLine") or ""
+                            p.summoner_name = f"{acct['gameName']}#{tl}" if tl else acct["gameName"]
+                            resolved += 1
+                    except Exception as exc:
+                        logger.warning("resolve %s failed: %s", p.puuid[:8], exc)
+                    if attempted % 25 == 0:
+                        db.commit()
+                        _jobs[job_id]["progress"] = {"attempted": attempted, "resolved": resolved}
+                db.commit()
+        finally:
+            db.close()
+        return {"attempted": attempted, "resolved": resolved}
+
+    _jobs[job_id] = {"status": "running", "step": "resolving"}
+    try:
+        stats = asyncio.run(_runner())
+        _jobs[job_id] = {"status": "done", "step": "done", "stats": stats}
+    except Exception as exc:
+        logger.exception("resolve-names failed")
+        _jobs[job_id] = {"status": "error", "error": str(exc)}
+
+
+@router.post("/resolve-names")
+def resolve_unknown_names(background: BackgroundTasks, max_resolve: int = Query(default=200)):
+    """Walk every '(unknown)' / stub player and resolve their Riot ID via account-v1."""
+    job_id = f"rn-{len(_jobs)+1}"
+    _jobs[job_id] = {"status": "queued", "step": "queued"}
+    background.add_task(_resolve_unknown_names_job, job_id, max_resolve)
+    return {"job_id": job_id, "status": "started", "max_resolve": max_resolve}
+
+
 @router.post("/cleanup-demo")
 def cleanup_demo(db: Session = Depends(get_db)):
     """Delete all synthetic demo data (puuids prefixed with 'demo-' and matches DEMO_*)."""

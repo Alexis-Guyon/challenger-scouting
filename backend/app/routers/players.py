@@ -204,6 +204,7 @@ def list_players(
     residency: str | None = Query(default=None, description='e.g. "Europe", "Korea"'),
     country: str | None = Query(default=None, description='e.g. "France"'),
     pro_only: bool = Query(default=False),
+    include_unresolved: bool = Query(default=False, description="Include stub players whose Riot name failed to resolve (shown as '(unknown)')"),
     db: Session = Depends(get_db),
 ):
     """Scout leaderboard. Default sort = CSS desc."""
@@ -221,6 +222,15 @@ def list_players(
     if patch:
         q = q.filter(PlayerAggregate.patch == patch)
     q = q.filter(PlayerAggregate.games_played >= min_games)
+
+    if not include_unresolved:
+        # By default, hide stub players (Riot ID never resolved during ingestion).
+        # A real Riot ID always contains "#" (gameName#tagLine). Stubs are either
+        # "(unknown)", "" or the 8-char puuid-prefix fallback — none have "#".
+        q = q.filter(Player.summoner_name.isnot(None))
+        q = q.filter(Player.summoner_name != "(unknown)")
+        q = q.filter(Player.summoner_name != "")
+        q = q.filter(Player.summoner_name.like("%#%"))
 
     if pro_only:
         q = q.filter(PlayerMeta.is_pro == True)  # noqa: E712

@@ -623,6 +623,24 @@ function initAdmin() {
       } catch { clearInterval(poll); }
     }, 5000);
   });
+
+  document.getElementById('a-resolve').addEventListener('click', async () => {
+    const max = prompt('How many stub players to resolve? (default 200, max ~1000 in one batch):', '200');
+    if (!max) return;
+    log.textContent = `Resolving up to ${max} unknown names via Riot account-v1...\n`;
+    const r = await API(`/admin/resolve-names?max_resolve=${max}`, { method: 'POST' });
+    log.textContent += `Job ${r.job_id} started.\n`;
+    const poll = setInterval(async () => {
+      try {
+        const j = await API('/admin/jobs/' + r.job_id);
+        const prog = j.progress ? ` · ${j.progress.resolved}/${j.progress.attempted} resolved` : '';
+        const summary = j.stats ? ' · ' + JSON.stringify(j.stats) : '';
+        log.textContent += `[${new Date().toLocaleTimeString()}] ${j.status} - ${j.step || ''}${prog}${summary}\n`;
+        log.scrollTop = log.scrollHeight;
+        if (j.status === 'done' || j.status === 'error') { clearInterval(poll); refreshStats(); }
+      } catch { clearInterval(poll); }
+    }, 3000);
+  });
 }
 
 /* ---------------- TOURNAMENT TAB ---------------- */

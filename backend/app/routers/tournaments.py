@@ -45,17 +45,50 @@ def _normalize_for_match(s: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
+def _candidates_for_match(s: str | None) -> list[str]:
+    """Multiple normalized forms — same logic as Leaguepedia matcher (strip team prefix + suffix)."""
+    if not s:
+        return []
+    base = s.split("#")[0].strip()
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def push(x: str):
+        n = re.sub(r"[^a-z0-9]", "", x.lower())
+        if n and n not in seen:
+            seen.add(n)
+            out.append(n)
+
+    push(base)
+    push(re.sub(r"^(twtv|trainer|coach|sub)\s+", "", base, flags=re.I).strip())
+    m = re.match(r"^([A-Z0-9]{1,5})\s+(.+)$", base)
+    if m:
+        push(m.group(2))
+        push(m.group(2).split(" ")[-1])
+    no_suffix = re.sub(r"\s+(NEXT|academy|smurf|alt|main|\d+)$", "", base, flags=re.I).strip()
+    if no_suffix != base:
+        push(no_suffix)
+    if m:
+        cleaned = re.sub(r"\s+(NEXT|academy|smurf|alt|main|\d+)$", "", m.group(2), flags=re.I).strip()
+        push(cleaned)
+        push(cleaned.split(" ")[-1])
+    parts = base.split(" ")
+    if len(parts) > 1:
+        push(parts[-1])
+    return out
+
+
 def _resolve_pro_player_id(db: Session, player: Player, meta: PlayerMeta | None) -> str | None:
     """Find lolesports pro_player_id for a Riot player. Cached on PlayerMeta.lolesports_id."""
     if meta and meta.lolesports_id:
         return meta.lolesports_id
 
-    norm = _normalize_for_match(player.summoner_name)
-    if not norm:
+    candidates = _candidates_for_match(player.summoner_name)
+    if not candidates:
         return None
+    cand_set = set(candidates)
 
-    # Search OfficialMatchParticipant by summoner_name OR player_name
-    candidates = (
+    rows = (
         db.query(OfficialMatchParticipant)
         .filter(
             (OfficialMatchParticipant.summoner_name.isnot(None))
@@ -63,8 +96,10 @@ def _resolve_pro_player_id(db: Session, player: Player, meta: PlayerMeta | None)
         )
         .all()
     )
-    for c in candidates:
-        if _normalize_for_match(c.summoner_name) == norm or _normalize_for_match(c.player_name) == norm:
+    for c in rows:
+        sname = _normalize_for_match(c.summoner_name)
+        pname = _normalize_for_match(c.player_name)
+        if sname in cand_set or pname in cand_set:
             if meta:
                 meta.lolesports_id = c.pro_player_id
                 db.commit()

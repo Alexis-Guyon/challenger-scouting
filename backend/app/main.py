@@ -23,7 +23,7 @@ app.add_middleware(
     # Allow same-origin (when bundled with the backend) plus Vercel/localhost
     # for the standalone frontend deployment. Auth is via Bearer JWT, not
     # cookies, so a permissive CORS surface is acceptable.
-    allow_origin_regex=r"https://.*\.vercel\.app|http://localhost(:\d+)?|http://127\.0\.0\.1(:\d+)?",
+    allow_origin_regex=r"https://.*\.vercel\.app|https://.*\.trycloudflare\.com|http://localhost(:\d+)?|http://127\.0\.0\.1(:\d+)?",
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],

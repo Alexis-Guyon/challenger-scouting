@@ -9,11 +9,14 @@
 <script>
   // API base URL — set when the frontend is hosted standalone (e.g. Vercel).
   // Empty value = same-origin (when bundled with the FastAPI backend).
-  // Auto-detect Vercel deployment by hostname → use the Fly backend.
+  //
+  // While the Fly trial is expired, we route Vercel traffic through a
+  // Cloudflare quick tunnel that forwards to the local backend.
+  // Replace this URL with a real production backend once you have one.
   (function() {
     var h = location.hostname;
-    if (h.endsWith(".vercel.app") || h === "challenger-scouting.example.com") {
-      window.SCOUTING_API_BASE = "https://challenger-scouting.fly.dev";
+    if (h.endsWith(".vercel.app")) {
+      window.SCOUTING_API_BASE = "https://psychological-share-subscription-generate.trycloudflare.com";
     } else {
       window.SCOUTING_API_BASE = window.SCOUTING_API_BASE || "";
     }

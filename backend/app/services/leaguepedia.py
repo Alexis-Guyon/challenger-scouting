@@ -412,16 +412,12 @@ def fetch_player_via_parse(canonical_name: str) -> dict | None:
     # Try to detect retired status from common fields
     is_retired = info.get("isretired", "no").lower() in ("yes", "true", "1")
 
-    # Image — try the obvious filenames first (<id>.jpg/png/webp). If none
-    # exists, fall back to scanning the page's embedded images for one
-    # whose filename mentions the player name (catches photos like
-    # "Hans Sama EU LCS 2018 Valentine.jpg").
+    # We deliberately don't fetch the player's headshot here.
+    # The UI uses the Riot in-game profile icon instead — it's more reliable
+    # (always present), more current, and saves 1-2 API calls per pro.
     page_title = page.get("title") or canonical_name
-    canonical = page_title.replace("_", " ")
-    image_hint = _resolve_image_filename(info, page_title)
-    image_url = _resolve_image_url_for(image_hint or canonical)
-    if not image_url:
-        image_url = _find_image_via_page_search(canonical)
+    image_hint = None
+    image_url = None
 
     return {
         "Player": info.get("id") or page_title.replace("_", " "),

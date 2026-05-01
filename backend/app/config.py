@@ -22,6 +22,20 @@ class Settings(BaseSettings):
     lp_username: str = ""
     lp_password: str = ""
 
+    # Webhook alerts (Discord + Slack). Either or both can be set.
+    # The Discord webhook URL: server settings → integrations → webhooks → new.
+    # The Slack webhook URL: api.slack.com/apps → incoming webhooks.
+    discord_webhook_url: str = ""
+    slack_webhook_url: str = ""
+
+    # Public origin used in alert links (the frontend URL — Vercel, Fly, etc.)
+    public_app_url: str = ""
+
+    # Alert thresholds — see services/alerts.py for exact semantics
+    alert_css_min: float = 70.0          # only surface players with CSS ≥ this
+    alert_css_delta: float = 4.0         # raise an alert when CSS jumps by ≥ this
+    alert_winrate_streak_min: int = 6    # min consecutive wins to alert
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 

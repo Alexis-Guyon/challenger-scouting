@@ -337,4 +337,54 @@ td.css { font-weight: 700; }
   font-size: 11px; font-weight: 600;
 }
 .league-logo { width: 14px; height: 14px; object-fit: contain; }
+
+/* Export PDF button */
+.export-btn {
+  background: var(--accent-2); color: #102018;
+  font-weight: 700;
+}
+
+/* ----------- Print styles (Export PDF) ----------- */
+@media print {
+  /* Hide everything except the player profile content */
+  header, nav, footer, .filters, .tabs, #login-screen,
+  .glossary-panel, .glossary-backdrop,
+  .user-menu, .star, .export-btn, button, .pager, #lb-pager,
+  #tab-tournament, #tab-roster {
+    display: none !important;
+  }
+  body {
+    background: white !important;
+    color: #111 !important;
+    font-size: 10pt;
+  }
+  #app, main { padding: 0 !important; max-width: 100% !important; }
+  .card, .player-header, .pro-identity {
+    background: white !important;
+    border: 1px solid #ccc !important;
+    box-shadow: none !important;
+    page-break-inside: avoid;
+    color: #111 !important;
+  }
+  h1, h2, h3, h4, .muted-h4, strong { color: #111 !important; }
+  .muted, .label { color: #444 !important; }
+  .accent, .role-tag, .score-pill {
+    border: 1px solid #888 !important;
+    background: #f3f3f3 !important;
+    color: #111 !important;
+  }
+  table { font-size: 9pt !important; }
+  th { background: #eee !important; color: #111 !important; }
+  td, th { border: 1px solid #ccc !important; }
+  .bar { background: #ddd !important; border: 1px solid #aaa !important; }
+  .bar > span { background: #f59e0b !important; }
+  .pro-photo { border: 1px solid #aaa !important; }
+  .delta-pos { color: #006d2c !important; }
+  .delta-neg { color: #a50f15 !important; }
+  /* Force one page per profile when reasonable */
+  .grid-2, .grid-3 { display: block !important; }
+  .grid-2 > *, .grid-3 > * { margin-bottom: 12px; page-break-inside: avoid; }
+  /* Print URL on each page */
+  @page { margin: 12mm 14mm; }
+}
 .no-data { font-style: italic; color: var(--muted); font-size: 11px; }

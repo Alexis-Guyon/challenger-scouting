@@ -613,6 +613,7 @@ async function loadPlayer(puuid) {
         <div style="font-size:32px;font-weight:800;">${agg.css_score}</div>
         <span class="score-pill ${scoreClass(agg.css_score)}">${scoreLabel(agg.css_score)}</span>
         <div class="muted" style="margin-top:4px;">P${agg.percentile_rank} · ${agg.role} · ${agg.games_played} games · ${agg.winrate}% WR</div>
+        <button id="export-pdf" class="export-btn" style="margin-top:8px;font-size:11px;padding:6px 12px;" title="Export this profile as PDF (browser print → Save as PDF)">📄 Export PDF</button>
       </div>
     </div>
 
@@ -745,6 +746,15 @@ async function loadPlayer(puuid) {
     await toggleWatch(puuid, e.target);
   });
 
+  // Export PDF — switch to soloq tab first so the printed page has full content,
+  // then trigger native browser print (user picks "Save as PDF" in dialog).
+  document.getElementById('export-pdf').addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'soloq'));
+    document.querySelectorAll('.tab-pane').forEach(x => x.style.display = 'none');
+    document.getElementById('tab-soloq').style.display = 'block';
+    setTimeout(() => window.print(), 250);
+  });
+
   // Notes
   loadNotes(puuid);
   document.getElementById('add-note').addEventListener('click', async () => {
@@ -871,17 +881,37 @@ function initAdmin() {
   document.getElementById('a-ingest').addEventListener('click', async () => {
     const players = document.getElementById('a-players').value;
     const matches = document.getElementById('a-matches').value;
-    log.textContent = `Starting ingest (${players} players × ${matches} matches)...\n`;
+    const progressBar = document.getElementById('a-progress');
+    progressBar.style.display = 'block';
+    progressBar.textContent = 'Starting…';
+    log.textContent = `Starting ingest (${players} players × ${matches} matches)…\n`;
     const r = await API(`/admin/ingest?player_limit=${players}&matches_per_player=${matches}`, { method: 'POST' });
     log.textContent += `Job ${r.job_id} started.\n`;
     const poll = setInterval(async () => {
       try {
         const j = await API('/admin/jobs/' + r.job_id);
-        log.textContent += `[${new Date().toLocaleTimeString()}] ${j.status} - ${j.step || ''}\n`;
+        let line = `[${new Date().toLocaleTimeString()}] ${j.status} - ${j.step || ''}`;
+        if (j.progress) {
+          const p = j.progress;
+          if (p.player_idx && p.player_total) {
+            const pct = Math.round(100 * p.player_idx / p.player_total);
+            progressBar.textContent = `${p.phase}: ${p.player_idx}/${p.player_total} (${pct}%) · last: ${p.current_player || '?'} (+${p.new_matches_last||0} matches)`;
+            line += ` · ${p.player_idx}/${p.player_total} ${p.current_player || ''}`;
+          } else if (p.attempted) {
+            progressBar.textContent = `Resolving names: ${p.resolved}/${p.attempted}`;
+          }
+        }
+        if (j.resolve_names) line += ` · resolved ${j.resolve_names.resolved} stubs`;
+        if (j.alerts_sent != null) line += ` · alerts sent: ${j.alerts_sent}`;
+        log.textContent += line + '\n';
         log.scrollTop = log.scrollHeight;
-        if (j.status === 'done' || j.status === 'error') { clearInterval(poll); refreshStats(); }
-      } catch { clearInterval(poll); }
-    }, 3000);
+        if (j.status === 'done' || j.status === 'error') {
+          clearInterval(poll);
+          progressBar.style.display = 'none';
+          refreshStats();
+        }
+      } catch { clearInterval(poll); progressBar.style.display = 'none'; }
+    }, 4000);
   });
 
   document.getElementById('a-recompute').addEventListener('click', async () => {

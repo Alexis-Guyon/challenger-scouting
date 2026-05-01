@@ -321,6 +321,23 @@ class ScoutNote(Base):
     created_at = Column(DateTime)
 
 
+class CSSSnapshot(Base):
+    """
+    Historical snapshot of every (puuid, patch, role) CSS score per ingestion.
+    Used by the alerts engine to detect deltas (jump in CSS, win streaks,
+    rising stars) without re-querying old data.
+    """
+    __tablename__ = "css_snapshots"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    puuid = Column(String, ForeignKey("players.puuid"), index=True)
+    patch = Column(String, index=True)
+    role = Column(String, index=True)
+    css_score = Column(Float, default=0.0)
+    percentile_rank = Column(Float, default=0.0)
+    games_played = Column(Integer, default=0)
+    snapshot_at = Column(DateTime, index=True)
+
+
 class RoleDistribution(Base):
     """Stores μ and σ per metric, per role, per patch — for z-score scoring."""
 

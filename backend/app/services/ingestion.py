@@ -191,17 +191,37 @@ async def ingest_player_matches(client: RiotClient, db: Session, puuid: str, cou
     return new_count
 
 
-async def run_ingestion(player_limit: int = 30, matches_per_player: int | None = None):
+async def run_ingestion(
+    player_limit: int = 30,
+    matches_per_player: int | None = None,
+    progress_cb=None,
+):
+    """
+    Run the full SoloQ ingestion pipeline.
+
+    progress_cb(idx, total, summoner_name, new_matches) lets the caller
+    surface a progress indicator. Called once per player.
+
+    Resumability: ingest_player_matches() already skips matches already in DB,
+    so re-running an interrupted ingestion naturally picks up where it stopped.
+    """
     matches_per_player = matches_per_player or settings.match_history_count
     async with RiotClient() as client:
         db = SessionLocal()
         try:
             players = await ingest_challenger_players(client, db, limit=player_limit)
-            for p in players:
+            total = len(players)
+            for idx, p in enumerate(players, start=1):
+                new_count = 0
                 try:
-                    await ingest_player_matches(client, db, p.puuid, count=matches_per_player)
+                    new_count = await ingest_player_matches(client, db, p.puuid, count=matches_per_player)
                 except Exception as exc:
                     logger.exception("matches ingest failed for %s: %s", p.summoner_name, exc)
+                if progress_cb:
+                    try:
+                        progress_cb(idx, total, p.summoner_name, new_count)
+                    except Exception:
+                        pass
         finally:
             db.close()
 

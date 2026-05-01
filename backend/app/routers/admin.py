@@ -27,10 +27,40 @@ logger = logging.getLogger(__name__)
 _jobs: dict[str, dict] = {}
 
 
-def _run_pipeline_job(job_id: str, player_limit: int, matches_per_player: int):
+def _run_pipeline_job(
+    job_id: str,
+    player_limit: int,
+    matches_per_player: int,
+    auto_resolve_names: bool = True,
+    auto_resolve_max: int = 500,
+    send_alerts: bool = True,
+):
     _jobs[job_id] = {"status": "running", "step": "ingest"}
+
+    def _on_player_done(idx, total, summoner_name, new_matches):
+        _jobs[job_id]["progress"] = {
+            "phase": "ingest",
+            "player_idx": idx, "player_total": total,
+            "current_player": summoner_name,
+            "new_matches_last": new_matches,
+        }
+
     try:
-        asyncio.run(run_ingestion(player_limit=player_limit, matches_per_player=matches_per_player))
+        asyncio.run(run_ingestion(
+            player_limit=player_limit,
+            matches_per_player=matches_per_player,
+            progress_cb=_on_player_done,
+        ))
+
+        # Auto-resolve stub players that just got auto-imported as opponents.
+        if auto_resolve_names:
+            _jobs[job_id]["step"] = "resolve_names"
+            try:
+                rn_stats = asyncio.run(_resolve_unknown_names_async(auto_resolve_max))
+                _jobs[job_id]["resolve_names"] = rn_stats
+            except Exception as exc:
+                logger.warning("auto-resolve names failed: %s", exc)
+                _jobs[job_id]["resolve_names_error"] = str(exc)
 
         _jobs[job_id]["step"] = "aggregate"
         db = SessionLocal()
@@ -41,15 +71,33 @@ def _run_pipeline_job(job_id: str, player_limit: int, matches_per_player: int):
             compute_role_distributions(db, min_games=1)
             compute_champion_distributions(db)
             _jobs[job_id]["step"] = "smurf_scoring"
-            score_all_smurfs(db)
+            try:
+                from ..services.smurf_ml import train_and_score_all
+                ml_stats = train_and_score_all(db)
+                _jobs[job_id]["smurf_ml"] = ml_stats
+            except Exception as exc:
+                logger.warning("smurf_ml failed (%s) — falling back to heuristic", exc)
+                score_all_smurfs(db)
             _jobs[job_id]["step"] = "scoring"
             score_all(db, min_games=1)
             _jobs[job_id]["step"] = "champion_scoring"
             score_all_champions(db)
+
+            # Run alerts engine: detect deltas vs previous snapshot
+            if send_alerts:
+                _jobs[job_id]["step"] = "alerts"
+                try:
+                    from ..services.alerts import run_alerts_check
+                    sent = run_alerts_check(db)
+                    _jobs[job_id]["alerts_sent"] = sent
+                except Exception as exc:
+                    logger.warning("alerts check failed: %s", exc)
+                    _jobs[job_id]["alerts_error"] = str(exc)
         finally:
             db.close()
 
-        _jobs[job_id] = {"status": "done", "step": "done"}
+        _jobs[job_id]["status"] = "done"
+        _jobs[job_id]["step"] = "done"
     except Exception as exc:
         logger.exception("pipeline failed")
         _jobs[job_id] = {"status": "error", "error": str(exc)}
@@ -58,12 +106,28 @@ def _run_pipeline_job(job_id: str, player_limit: int, matches_per_player: int):
 @router.post("/ingest")
 def start_ingest(
     background: BackgroundTasks,
-    player_limit: int = Query(default=20),
-    matches_per_player: int = Query(default=20),
+    player_limit: int = Query(default=20, ge=1, le=400),
+    matches_per_player: int = Query(default=20, ge=1, le=100),
+    auto_resolve_names: bool = Query(default=True, description="Run /resolve-names automatically after ingest"),
+    auto_alerts: bool = Query(default=True, description="Send Discord/Slack alerts after ingest"),
 ):
+    """
+    Pull Challenger players + their match history. Now safer for large batches:
+    - player_limit up to 400 (the full Challenger ladder is ~300, GM ~700)
+    - matches_per_player up to 100
+    - resume: ingest_player_matches already skips matches that are already in DB,
+      so re-running an interrupted job naturally picks up where it stopped.
+    """
     job_id = f"job-{len(_jobs)+1}"
-    _jobs[job_id] = {"status": "queued", "step": "queued"}
-    background.add_task(_run_pipeline_job, job_id, player_limit, matches_per_player)
+    _jobs[job_id] = {
+        "status": "queued",
+        "step": "queued",
+        "params": {"player_limit": player_limit, "matches_per_player": matches_per_player},
+    }
+    background.add_task(
+        _run_pipeline_job, job_id, player_limit, matches_per_player,
+        auto_resolve_names, 500, auto_alerts,
+    )
     return {"job_id": job_id, "status": "started"}
 
 
@@ -90,6 +154,32 @@ def recompute(min_games: int = Query(default=None), db: Session = Depends(get_db
         "smurf_suspect": n_smurf,
         "champion_baselines": n_champ,
     }
+
+
+@router.post("/smurf/retrain")
+def smurf_retrain(db: Session = Depends(get_db)):
+    """
+    Retrain the smurf-detection logistic regression on the current DB state
+    and re-score every player. Returns the learned weights + suspect count.
+    """
+    from ..services.smurf_ml import train_and_score_all
+    return train_and_score_all(db)
+
+
+@router.post("/alerts/test")
+def alerts_test():
+    """Send a test ping to all configured webhooks (Discord + Slack)."""
+    from ..services.alerts import send_test_alert
+    n = send_test_alert()
+    return {"sent": n}
+
+
+@router.post("/alerts/run")
+def alerts_run(db: Session = Depends(get_db)):
+    """Run the alerts engine right now without re-ingesting."""
+    from ..services.alerts import run_alerts_check
+    n = run_alerts_check(db)
+    return {"alerts_sent": n}
 
 
 @router.get("/stats")
@@ -187,51 +277,65 @@ def sync_leaguepedia(background: BackgroundTasks):
     return {"job_id": job_id, "status": "started"}
 
 
-def _resolve_unknown_names_job(job_id: str, max_resolve: int):
-    """Background job: call Riot account-v1 for every stub player and persist real Riot IDs."""
-    import asyncio
+async def _resolve_unknown_names_async(max_resolve: int, progress_cb=None) -> dict:
+    """Reusable: call Riot account-v1 on every stub player and persist real Riot IDs.
 
+    `progress_cb(attempted, resolved)` is called every 25 lookups so the
+    caller can update its job dict.
+    """
     from ..models import Player as _Player
     from ..services.riot_client import RiotClient
 
-    async def _runner():
-        db = SessionLocal()
-        resolved = 0
-        attempted = 0
-        try:
-            stubs = (
-                db.query(_Player)
-                .filter(
-                    (_Player.summoner_name == "(unknown)")
-                    | (_Player.summoner_name == "")
-                    | (~_Player.summoner_name.like("%#%"))
-                )
-                .limit(max_resolve)
-                .all()
+    db = SessionLocal()
+    resolved = 0
+    attempted = 0
+    try:
+        stubs = (
+            db.query(_Player)
+            .filter(
+                (_Player.summoner_name == "(unknown)")
+                | (_Player.summoner_name == "")
+                | (~_Player.summoner_name.like("%#%"))
             )
-            _jobs[job_id]["total"] = len(stubs)
-            async with RiotClient() as client:
-                for p in stubs:
-                    attempted += 1
-                    try:
-                        acct = await client.account_by_puuid(p.puuid)
-                        if acct and acct.get("gameName"):
-                            tl = acct.get("tagLine") or ""
-                            p.summoner_name = f"{acct['gameName']}#{tl}" if tl else acct["gameName"]
-                            resolved += 1
-                    except Exception as exc:
-                        logger.warning("resolve %s failed: %s", p.puuid[:8], exc)
-                    if attempted % 25 == 0:
-                        db.commit()
-                        _jobs[job_id]["progress"] = {"attempted": attempted, "resolved": resolved}
-                db.commit()
-        finally:
-            db.close()
-        return {"attempted": attempted, "resolved": resolved}
+            .limit(max_resolve)
+            .all()
+        )
+        if progress_cb:
+            progress_cb(0, 0, total=len(stubs))
+        async with RiotClient() as client:
+            for p in stubs:
+                attempted += 1
+                try:
+                    acct = await client.account_by_puuid(p.puuid)
+                    if acct and acct.get("gameName"):
+                        tl = acct.get("tagLine") or ""
+                        p.summoner_name = f"{acct['gameName']}#{tl}" if tl else acct["gameName"]
+                        resolved += 1
+                except Exception as exc:
+                    logger.warning("resolve %s failed: %s", p.puuid[:8], exc)
+                if attempted % 25 == 0:
+                    db.commit()
+                    if progress_cb:
+                        progress_cb(attempted, resolved)
+            db.commit()
+    finally:
+        db.close()
+    return {"attempted": attempted, "resolved": resolved}
+
+
+def _resolve_unknown_names_job(job_id: str, max_resolve: int):
+    """Standalone background job — used by /admin/resolve-names."""
+    import asyncio
+
+    def _on_progress(attempted, resolved, total=None):
+        update = {"progress": {"attempted": attempted, "resolved": resolved}}
+        if total is not None:
+            update["total"] = total
+        _jobs[job_id].update(update)
 
     _jobs[job_id] = {"status": "running", "step": "resolving"}
     try:
-        stats = asyncio.run(_runner())
+        stats = asyncio.run(_resolve_unknown_names_async(max_resolve, _on_progress))
         _jobs[job_id] = {"status": "done", "step": "done", "stats": stats}
     except Exception as exc:
         logger.exception("resolve-names failed")

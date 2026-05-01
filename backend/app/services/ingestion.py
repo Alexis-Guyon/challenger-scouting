@@ -29,10 +29,16 @@ def patch_from_version(game_version: str) -> str:
 async def _ingest_league_entries(
     client: RiotClient, db: Session, entries: list[dict], tier_label: str,
 ) -> list[Player]:
-    """Persist a list of league/v4 entries as Player + RankSnapshot rows."""
+    """Persist a list of league/v4 entries as Player + RankSnapshot rows.
+
+    Commits in batches of 25 so the DB is queryable mid-run — without this
+    a 200-player Master ingest would buffer 8 minutes of inserts and only
+    surface them at the very end (which made progress polling lie).
+    """
     players: list[Player] = []
     now = datetime.now(timezone.utc)
-    for e in entries:
+    BATCH = 25
+    for idx, e in enumerate(entries, start=1):
         puuid = e.get("puuid")
         sid = e.get("summonerId")
         if not puuid and not sid:
@@ -90,6 +96,11 @@ async def _ingest_league_entries(
         )
         db.add(snap)
         players.append(p)
+        # Flush every BATCH entries so the DB reflects partial progress
+        # (mid-run polling no longer reports zero rows for 8 minutes).
+        if idx % BATCH == 0:
+            db.commit()
+            logger.info("ingest %s: %d/%d committed", tier_label.lower(), idx, len(entries))
     db.commit()
     logger.info("ingested %d %s players", len(players), tier_label.lower())
     return players

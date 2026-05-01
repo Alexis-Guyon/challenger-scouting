@@ -372,3 +372,79 @@ class ChampionDistribution(Base):
     __table_args__ = (
         UniqueConstraint("patch", "role", "champion_id", "metric", name="uq_chdist_patch_role_champ_metric"),
     )
+
+
+class IngestJob(Base):
+    """Persisted state for admin background jobs.
+
+    Replaces the in-memory `_jobs` dict that was wiped on every uvicorn
+    reload. Status / step / progress / extras are stored as JSON text
+    blobs so the schema stays stable while the payload shape evolves.
+    """
+
+    __tablename__ = "ingest_jobs"
+    id = Column(String, primary_key=True)            # e.g. "job-3", "tn-1"
+    kind = Column(String, default="ingest")          # ingest / tournaments / lolpros / leaguepedia
+    status = Column(String, default="queued", index=True)  # queued / running / done / error
+    step = Column(String, default="queued")
+    params_json = Column(Text, nullable=True)
+    progress_json = Column(Text, nullable=True)
+    extras_json = Column(Text, nullable=True)        # resolve_names, smurf_ml, alerts_sent, etc.
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, index=True)
+    updated_at = Column(DateTime, index=True)
+
+
+class SmurfLabel(Base):
+    """Manual smurf labels collected via the player profile UI.
+
+    Powers the periodic re-training of the smurf logistic regression in
+    services/smurf_ml.py. Each (puuid, user_id) pair is unique so a
+    scout can correct their own past calls.
+    """
+
+    __tablename__ = "smurf_labels"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    puuid = Column(String, ForeignKey("players.puuid"), index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    label = Column(Boolean, default=True)            # True = smurf, False = explicitly NOT smurf
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("puuid", "user_id", name="uq_smurf_label_player_user"),
+    )
+
+
+class AlertRule(Base):
+    """User-configurable alert rule fired at the end of each ingest cycle.
+
+    Conditions are stored as a JSON document (e.g. {"min_css": 65,
+    "max_age": 21, "fa": true, "rising": true}); when the cycle finishes
+    every Player matching ALL conditions is pushed via the configured
+    Discord webhook.
+    """
+
+    __tablename__ = "alert_rules"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True)
+    name = Column(String)
+    conditions_json = Column(Text)
+    webhook_url = Column(String)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime)
+    last_fired_at = Column(DateTime, nullable=True)
+
+
+class AlertHistory(Base):
+    """Append-only log of every alert that was sent (or attempted)."""
+
+    __tablename__ = "alert_history"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rule_id = Column(Integer, ForeignKey("alert_rules.id"), index=True, nullable=True)
+    puuid = Column(String, index=True, nullable=True)
+    summoner_name = Column(String, nullable=True)
+    payload_json = Column(Text, nullable=True)       # full Discord embed sent
+    delivered = Column(Boolean, default=False)
+    error = Column(Text, nullable=True)
+    fired_at = Column(DateTime, index=True)

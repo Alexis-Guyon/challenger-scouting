@@ -15,6 +15,7 @@ from ..services.aggregation import (
     compute_role_distributions,
 )
 from ..services.ingestion import run_ingestion
+from ..services.jobs import create_job, get_job, list_jobs, next_job_id, update_job
 from ..services.leaguepedia import run_leaguepedia_sync_sync
 from ..services.lolpros import run_lolpros_sync_sync
 from ..services.scoring import score_all, score_all_champions, score_all_smurfs
@@ -22,9 +23,6 @@ from ..services.tournament_ingestion import DEFAULT_LEAGUE_SLUGS, run_tournament
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 logger = logging.getLogger(__name__)
-
-
-_jobs: dict[str, dict] = {}
 
 
 def _run_pipeline_job(
@@ -36,15 +34,15 @@ def _run_pipeline_job(
     send_alerts: bool = True,
     tiers: list[str] | None = None,
 ):
-    _jobs[job_id] = {"status": "running", "step": "ingest"}
+    update_job(job_id, status="running", step="ingest")
 
     def _on_player_done(idx, total, summoner_name, new_matches):
-        _jobs[job_id]["progress"] = {
+        update_job(job_id, progress={
             "phase": "ingest",
             "player_idx": idx, "player_total": total,
             "current_player": summoner_name,
             "new_matches_last": new_matches,
-        }
+        })
 
     try:
         asyncio.run(run_ingestion(
@@ -54,65 +52,59 @@ def _run_pipeline_job(
             tiers=tiers,
         ))
 
-        # Auto-resolve stub players that just got auto-imported as opponents.
         if auto_resolve_names:
-            _jobs[job_id]["step"] = "resolve_names"
+            update_job(job_id, step="resolve_names")
             try:
                 rn_stats = asyncio.run(_resolve_unknown_names_async(auto_resolve_max))
-                _jobs[job_id]["resolve_names"] = rn_stats
+                update_job(job_id, extras_merge={"resolve_names": rn_stats})
             except Exception as exc:
                 logger.warning("auto-resolve names failed: %s", exc)
-                _jobs[job_id]["resolve_names_error"] = str(exc)
+                update_job(job_id, extras_merge={"resolve_names_error": str(exc)})
 
-        _jobs[job_id]["step"] = "aggregate"
+        update_job(job_id, step="aggregate")
         db = SessionLocal()
         try:
             compute_lobby_lp(db)
             aggregate_all_players(db)
-            _jobs[job_id]["step"] = "distributions"
+            update_job(job_id, step="distributions")
             compute_role_distributions(db, min_games=1)
             compute_champion_distributions(db)
-            _jobs[job_id]["step"] = "smurf_scoring"
+            update_job(job_id, step="smurf_scoring")
             try:
                 from ..services.smurf_ml import train_and_score_all
                 ml_stats = train_and_score_all(db)
-                _jobs[job_id]["smurf_ml"] = ml_stats
+                update_job(job_id, extras_merge={"smurf_ml": ml_stats})
             except Exception as exc:
                 logger.warning("smurf_ml failed (%s) — falling back to heuristic", exc)
                 score_all_smurfs(db)
-            _jobs[job_id]["step"] = "scoring"
+            update_job(job_id, step="scoring")
             score_all(db, min_games=1)
-            _jobs[job_id]["step"] = "champion_scoring"
+            update_job(job_id, step="champion_scoring")
             score_all_champions(db)
 
-            # Detect rising stars BEFORE alerts so the alerts engine can
-            # surface fresh tags. The detector reads the CSSSnapshot history
-            # which `run_alerts_check` will then extend with the current cycle.
-            _jobs[job_id]["step"] = "rising_stars"
+            update_job(job_id, step="rising_stars")
             try:
                 from ..services.rising_stars import annotate_rising_stars_in_aggregates
-                _jobs[job_id]["rising_stars"] = annotate_rising_stars_in_aggregates(db)
+                update_job(job_id, extras_merge={"rising_stars": annotate_rising_stars_in_aggregates(db)})
             except Exception as exc:
                 logger.warning("rising stars annotation failed: %s", exc)
 
-            # Run alerts engine: detect deltas vs previous snapshot
             if send_alerts:
-                _jobs[job_id]["step"] = "alerts"
+                update_job(job_id, step="alerts")
                 try:
                     from ..services.alerts import run_alerts_check
                     sent = run_alerts_check(db)
-                    _jobs[job_id]["alerts_sent"] = sent
+                    update_job(job_id, extras_merge={"alerts_sent": sent})
                 except Exception as exc:
                     logger.warning("alerts check failed: %s", exc)
-                    _jobs[job_id]["alerts_error"] = str(exc)
+                    update_job(job_id, extras_merge={"alerts_error": str(exc)})
         finally:
             db.close()
 
-        _jobs[job_id]["status"] = "done"
-        _jobs[job_id]["step"] = "done"
+        update_job(job_id, status="done", step="done")
     except Exception as exc:
         logger.exception("pipeline failed")
-        _jobs[job_id] = {"status": "error", "error": str(exc)}
+        update_job(job_id, status="error", error=str(exc))
 
 
 @router.post("/ingest")
@@ -146,11 +138,12 @@ def start_ingest(
         from fastapi import HTTPException
         raise HTTPException(400, f"unknown tier(s): {invalid}; valid: challenger, grandmaster, master")
 
-    job_id = f"job-{len(_jobs)+1}"
-    _jobs[job_id] = {
-        "status": "queued", "step": "queued",
-        "params": {"player_limit": player_limit, "matches_per_player": matches_per_player, "tiers": tier_list},
-    }
+    job_id = next_job_id("job")
+    create_job(job_id, "ingest", params={
+        "player_limit": player_limit,
+        "matches_per_player": matches_per_player,
+        "tiers": tier_list,
+    })
     background.add_task(
         _run_pipeline_job, job_id, player_limit, matches_per_player,
         auto_resolve_names, 500, auto_alerts, tier_list,
@@ -160,7 +153,13 @@ def start_ingest(
 
 @router.get("/jobs/{job_id}")
 def job_status(job_id: str):
-    return _jobs.get(job_id, {"status": "unknown"})
+    return get_job(job_id)
+
+
+@router.get("/jobs")
+def jobs_history(limit: int = Query(default=30, ge=1, le=200)):
+    """Recent jobs across all kinds (ingest, tournaments, lolpros, ...)."""
+    return {"jobs": list_jobs(limit=limit)}
 
 
 @router.post("/recompute")
@@ -237,27 +236,27 @@ def system_stats(db: Session = Depends(get_db)):
 
 
 def _sync_leaguepedia_job(job_id: str):
-    _jobs[job_id] = {"status": "running", "step": "fetching"}
+    update_job(job_id, status="running", step="fetching")
     try:
         db = SessionLocal()
         try:
             stats = run_leaguepedia_sync_sync(db)
         finally:
             db.close()
-        _jobs[job_id] = {"status": "done", "step": "done", "stats": stats}
+        update_job(job_id, status="done", step="done", extras_merge={"stats": stats})
     except Exception as exc:
         logger.exception("leaguepedia sync failed")
-        _jobs[job_id] = {"status": "error", "error": str(exc)}
+        update_job(job_id, status="error", error=str(exc))
 
 
 def _sync_tournaments_job(job_id: str, league_slugs: list[str], max_events: int):
-    _jobs[job_id] = {"status": "running", "step": "fetching"}
+    update_job(job_id, status="running", step="fetching")
     try:
         stats = run_tournament_sync_sync(league_slugs=league_slugs, max_events_per_league=max_events)
-        _jobs[job_id] = {"status": "done", "step": "done", "stats": stats}
+        update_job(job_id, status="done", step="done", extras_merge={"stats": stats})
     except Exception as exc:
         logger.exception("tournament sync failed")
-        _jobs[job_id] = {"status": "error", "error": str(exc)}
+        update_job(job_id, status="error", error=str(exc))
 
 
 @router.post("/sync-tournaments")
@@ -267,39 +266,39 @@ def sync_tournaments(
     max_events: int = Query(default=200, description="Max events per league"),
 ):
     slugs = [s.strip() for s in leagues.split(",") if s.strip()] or list(DEFAULT_LEAGUE_SLUGS)
-    job_id = f"tn-{len(_jobs)+1}"
-    _jobs[job_id] = {"status": "queued", "step": "queued"}
+    job_id = next_job_id("tn")
+    create_job(job_id, "tournaments", params={"leagues": slugs, "max_events": max_events})
     background.add_task(_sync_tournaments_job, job_id, slugs, max_events)
     return {"job_id": job_id, "status": "started", "leagues": slugs}
 
 
 def _sync_lolpros_job(job_id: str, server: str):
-    _jobs[job_id] = {"status": "running", "step": "fetching"}
+    update_job(job_id, status="running", step="fetching")
     try:
         db = SessionLocal()
         try:
             stats = run_lolpros_sync_sync(db, server=server)
         finally:
             db.close()
-        _jobs[job_id] = {"status": "done", "step": "done", "stats": stats}
+        update_job(job_id, status="done", step="done", extras_merge={"stats": stats})
     except Exception as exc:
         logger.exception("lolpros sync failed")
-        _jobs[job_id] = {"status": "error", "error": str(exc)}
+        update_job(job_id, status="error", error=str(exc))
 
 
 @router.post("/sync-lolpros")
 def sync_lolpros(background: BackgroundTasks, server: str = Query(default="EUW")):
     """Pull pro player metadata from lolpros.gg (preferred over Leaguepedia)."""
-    job_id = f"lp-{len(_jobs)+1}"
-    _jobs[job_id] = {"status": "queued", "step": "queued"}
+    job_id = next_job_id("lp")
+    create_job(job_id, "lolpros", params={"server": server})
     background.add_task(_sync_lolpros_job, job_id, server)
     return {"job_id": job_id, "status": "started", "server": server}
 
 
 @router.post("/sync-leaguepedia")
 def sync_leaguepedia(background: BackgroundTasks):
-    job_id = f"lp-{len(_jobs)+1}"
-    _jobs[job_id] = {"status": "queued", "step": "queued"}
+    job_id = next_job_id("lp")
+    create_job(job_id, "leaguepedia")
     background.add_task(_sync_leaguepedia_job, job_id)
     return {"job_id": job_id, "status": "started"}
 
@@ -355,25 +354,25 @@ def _resolve_unknown_names_job(job_id: str, max_resolve: int):
     import asyncio
 
     def _on_progress(attempted, resolved, total=None):
-        update = {"progress": {"attempted": attempted, "resolved": resolved}}
+        progress: dict = {"attempted": attempted, "resolved": resolved}
         if total is not None:
-            update["total"] = total
-        _jobs[job_id].update(update)
+            progress["total"] = total
+        update_job(job_id, progress=progress)
 
-    _jobs[job_id] = {"status": "running", "step": "resolving"}
+    update_job(job_id, status="running", step="resolving")
     try:
         stats = asyncio.run(_resolve_unknown_names_async(max_resolve, _on_progress))
-        _jobs[job_id] = {"status": "done", "step": "done", "stats": stats}
+        update_job(job_id, status="done", step="done", extras_merge={"stats": stats})
     except Exception as exc:
         logger.exception("resolve-names failed")
-        _jobs[job_id] = {"status": "error", "error": str(exc)}
+        update_job(job_id, status="error", error=str(exc))
 
 
 @router.post("/resolve-names")
 def resolve_unknown_names(background: BackgroundTasks, max_resolve: int = Query(default=200)):
     """Walk every '(unknown)' / stub player and resolve their Riot ID via account-v1."""
-    job_id = f"rn-{len(_jobs)+1}"
-    _jobs[job_id] = {"status": "queued", "step": "queued"}
+    job_id = next_job_id("rn")
+    create_job(job_id, "resolve_names", params={"max_resolve": max_resolve})
     background.add_task(_resolve_unknown_names_job, job_id, max_resolve)
     return {"job_id": job_id, "status": "started", "max_resolve": max_resolve}
 

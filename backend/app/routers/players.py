@@ -7,6 +7,7 @@ from ..config import settings
 from ..db import get_db
 from ..models import (
     ChampionPool,
+    CSSSnapshot,
     MatchParticipant,
     Player,
     PlayerAggregate,
@@ -137,6 +138,75 @@ def search_players(name: str = Query(...), db: Session = Depends(get_db)):
         .all()
     )
     return [_serialize_player(p, db) for p in rows]
+
+
+@router.get("/{puuid}/history")
+def player_history(
+    puuid: str,
+    role: str | None = Query(default=None, description="Filter to a single role"),
+    db: Session = Depends(get_db),
+):
+    """
+    Return CSS snapshot history for a player, grouped by role.
+
+    Each snapshot is a (patch, role) state at a given time. The frontend uses
+    this to draw "evolution of CSS over X patches" line charts. We dedupe to
+    one row per (role, patch) — the latest snapshot wins — so a chart point
+    represents the patch's final CSS, not an intermediate ingest snapshot.
+    """
+    p = db.get(Player, puuid)
+    if not p:
+        raise HTTPException(404, "player not found")
+
+    q = db.query(CSSSnapshot).filter_by(puuid=puuid)
+    if role:
+        q = q.filter(CSSSnapshot.role == role.upper())
+    snaps = q.order_by(CSSSnapshot.snapshot_at.asc()).all()
+
+    if not snaps:
+        return {
+            "puuid": puuid,
+            "summoner_name": p.summoner_name,
+            "by_role": {},
+            "patches_count": 0,
+            "note": "No snapshots yet. Snapshots are saved at the end of each ingestion. "
+                    "Need at least 2 snapshots on different patches to draw a meaningful curve.",
+        }
+
+    # Group by role then dedupe to latest snapshot per (role, patch)
+    by_role: dict[str, dict[str, CSSSnapshot]] = {}
+    for s in snaps:
+        if not s.role or not s.patch:
+            continue
+        bucket = by_role.setdefault(s.role, {})
+        prev = bucket.get(s.patch)
+        if not prev or s.snapshot_at > prev.snapshot_at:
+            bucket[s.patch] = s
+
+    out: dict[str, list[dict]] = {}
+    all_patches: set[str] = set()
+    for r, patch_to_snap in by_role.items():
+        # Sort by patch (lexicographic works well for "16.9" / "16.10" if
+        # we pad — but here we sort by snapshot_at as a proxy for chronology)
+        sorted_snaps = sorted(patch_to_snap.values(), key=lambda x: x.snapshot_at)
+        out[r] = [
+            {
+                "patch": s.patch,
+                "css": round(s.css_score or 0, 1),
+                "percentile": round(s.percentile_rank or 0, 1),
+                "games": s.games_played,
+                "snapshot_at": s.snapshot_at.isoformat() if s.snapshot_at else None,
+            }
+            for s in sorted_snaps
+        ]
+        all_patches.update(s.patch for s in sorted_snaps)
+
+    return {
+        "puuid": puuid,
+        "summoner_name": p.summoner_name,
+        "by_role": out,
+        "patches_count": len(all_patches),
+    }
 
 
 @router.get("/{puuid}")

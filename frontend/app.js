@@ -875,6 +875,11 @@ async function loadPlayer(puuid) {
       </div>
     </div>
 
+    <div class="card" id="css-history-card" style="display:none;">
+      <h3>CSS history <span class="muted" style="font-size:11px;font-weight:400;">evolution across patches</span></h3>
+      <canvas id="css-history-chart" height="200"></canvas>
+    </div>
+
     <div class="grid-2">
       <div class="card">
         <h3>Score breakdown <a href="#" class="muted" id="open-glossary-3" style="font-size:11px;font-weight:400;text-decoration:none;">📖 explain</a></h3>
@@ -946,6 +951,9 @@ async function loadPlayer(puuid) {
     setTimeout(() => window.print(), 250);
   });
 
+  // CSS history (best-effort — silent fail if no snapshots yet)
+  loadCssHistory(puuid).catch(() => {});
+
   // Notes
   loadNotes(puuid);
   document.getElementById('add-note').addEventListener('click', async () => {
@@ -980,6 +988,74 @@ async function loadPlayer(puuid) {
       scales: { r: { min: 0, max: 100, grid:{color:'#2a2e37'}, angleLines:{color:'#2a2e37'}, pointLabels:{color:'#ebeced'}, ticks:{display:false} } },
       plugins: { legend: { labels: { color: '#ebeced' } } },
     }
+  });
+}
+
+let _cssHistoryChart = null;
+async function loadCssHistory(puuid) {
+  const card = document.getElementById('css-history-card');
+  if (!card) return;
+  const data = await API('/players/' + puuid + '/history');
+  const byRole = data.by_role || {};
+  const roles = Object.keys(byRole);
+  if (!roles.length || data.patches_count < 2) {
+    // Not enough data yet — keep the card hidden
+    return;
+  }
+
+  card.style.display = 'block';
+  // Build the union of all patches across roles for the X axis
+  const patchOrder = [];
+  const seen = new Set();
+  roles.forEach(r => byRole[r].forEach(p => {
+    if (!seen.has(p.patch)) { seen.add(p.patch); patchOrder.push(p.patch); }
+  }));
+  // Sort patches by their first snapshot timestamp
+  const firstSeen = {};
+  roles.forEach(r => byRole[r].forEach(p => {
+    if (firstSeen[p.patch] === undefined) firstSeen[p.patch] = p.snapshot_at || '';
+  }));
+  patchOrder.sort((a, b) => (firstSeen[a] || '').localeCompare(firstSeen[b] || ''));
+
+  // One dataset per role, aligned on patchOrder
+  const ROLE_COLORS = { TOP:'#f59e0b', JGL:'#34d399', MID:'#60a5fa', ADC:'#f87171', SUP:'#a78bfa' };
+  const datasets = roles.map(r => {
+    const byPatch = Object.fromEntries(byRole[r].map(s => [s.patch, s]));
+    return {
+      label: r,
+      data: patchOrder.map(p => byPatch[p] ? byPatch[p].css : null),
+      borderColor: ROLE_COLORS[r] || '#ebeced',
+      backgroundColor: (ROLE_COLORS[r] || '#ebeced') + '22',
+      tension: 0.25,
+      spanGaps: true,
+      pointRadius: 4,
+      pointHoverRadius: 6,
+    };
+  });
+
+  if (_cssHistoryChart) _cssHistoryChart.destroy();
+  _cssHistoryChart = new Chart(document.getElementById('css-history-chart'), {
+    type: 'line',
+    data: { labels: patchOrder, datasets },
+    options: {
+      scales: {
+        x: { grid: { color: '#2a2e37' }, ticks: { color: '#8a8f99' }, title: { display: true, text: 'Patch', color: '#8a8f99' } },
+        y: { min: 0, max: 100, grid: { color: '#2a2e37' }, ticks: { color: '#ebeced' }, title: { display: true, text: 'CSS', color: '#8a8f99' } },
+      },
+      plugins: {
+        legend: { labels: { color: '#ebeced' } },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const r = ctx.dataset.label;
+              const s = (byRole[r] || []).find(x => x.patch === ctx.label);
+              if (!s) return `${r}: ${ctx.parsed.y}`;
+              return `${r}: CSS ${s.css} · P${s.percentile} · ${s.games} games`;
+            },
+          },
+        },
+      },
+    },
   });
 }
 

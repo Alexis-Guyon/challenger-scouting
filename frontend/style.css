@@ -492,3 +492,107 @@ td.css { font-weight: 700; }
   @page { margin: 12mm 14mm; }
 }
 .no-data { font-style: italic; color: var(--muted); font-size: 11px; }
+
+/* ===================== Mobile / tablet responsive ===================== */
+/* Tablet — stack header, simplify filters, allow horizontal table scroll */
+@media (max-width: 900px) {
+  header {
+    flex-wrap: wrap;
+    gap: 10px 12px;
+    padding: 12px 16px;
+  }
+  .brand h1 { font-size: 16px; }
+  .brand .sub { display: none; }
+  nav {
+    width: 100%;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+  }
+  nav a { white-space: nowrap; padding: 6px 10px; font-size: 13px; }
+  .user-menu { gap: 8px; }
+  .user-menu .muted { display: none; }
+  .user-menu button { padding: 6px 10px; font-size: 12px; }
+
+  main { padding: 14px 14px 30px; }
+
+  .filters { padding: 12px; gap: 10px; }
+  .filters label,
+  .filters input,
+  .filters select {
+    min-width: 0;
+    width: 100%;
+  }
+  .filters > * { flex: 1 1 calc(50% - 5px); }
+  .filters > button { flex: 1 1 100%; }
+
+  /* Player profile — stack the two columns */
+  .player-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 14px;
+  }
+  .player-header > div[style*="text-align:right"],
+  .player-header > div[style*="text-align: right"] {
+    text-align: left !important;
+    align-self: stretch;
+  }
+
+  .grid-2, .grid-3 { grid-template-columns: 1fr; gap: 14px; }
+
+  /* Tabs — horizontal scroll if needed */
+  .tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .tab { white-space: nowrap; padding: 8px 12px; font-size: 12px; }
+
+  /* Modals — fill viewport on mobile */
+  .match-modal { padding: 8px; align-items: center; }
+  .match-modal-card { max-width: 100% !important; max-height: 95vh; overflow-y: auto; }
+  .match-modal-head { padding: 12px 14px; }
+  .match-modal-body { padding: 12px 14px 18px; }
+
+  .glossary-panel { width: 100%; }
+
+  /* Pro identity card */
+  .pro-identity-header { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .pro-photo { width: 64px; height: 64px; }
+  .lolpros-link { align-self: stretch; text-align: center; }
+
+  /* Champion card grid — 2 per row on phones */
+  .champion-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  }
+
+  /* Tables already overflow-x via .table-wrap; just tighten padding */
+  table { font-size: 12px; }
+  th, td { padding: 8px 10px; }
+
+  /* Pager */
+  #lb-pager { flex-direction: column; align-items: flex-start; gap: 8px; }
+
+  /* Header avatar smaller on mobile */
+  .header-avatar { width: 52px; height: 52px; }
+}
+
+/* Phone — even tighter */
+@media (max-width: 540px) {
+  header { padding: 10px 12px; }
+  .logo { width: 32px; height: 32px; font-size: 11px; }
+  .brand h1 { font-size: 14px; }
+  nav a { padding: 5px 8px; font-size: 12px; }
+
+  main { padding: 10px 10px 24px; }
+  .card { padding: 12px; }
+
+  .filters > * { flex-basis: 100%; }
+
+  canvas { max-width: 100%; height: auto !important; }
+
+  .login-card { width: 92vw; padding: 20px; }
+}
+
+/* Touch target hint — make all buttons reach 36px height on touch devices */
+@media (hover: none) and (pointer: coarse) {
+  button, .star, nav a { min-height: 36px; }
+}

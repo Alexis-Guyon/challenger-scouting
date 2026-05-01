@@ -120,7 +120,16 @@ function proBadge(p) {
 function teamCell(p) {
   if (!p.meta) return '<span class="muted">—</span>';
   if (p.meta.is_fa) return '<span class="muted" style="font-style:italic;">free agent</span>';
-  return p.meta.current_team || '<span class="muted">—</span>';
+  const name = p.meta.current_team || '';
+  if (!name) return '<span class="muted">—</span>';
+  const logo = p.meta.current_team_logo_url;
+  const tag = p.meta.current_team_tag || '';
+  if (logo) {
+    return `<span class="team-cell"><img class="team-logo" src="${logo}" alt="${tag}" onerror="this.style.display='none'"/> <span>${name}</span></span>`;
+  }
+  // No logo → show small text tag pill + name
+  if (tag) return `<span class="team-pill">${tag}</span> ${name}`;
+  return name;
 }
 function ageCell(p) {
   if (!p.meta || !p.meta.age) return '<span class="muted">—</span>';
@@ -345,9 +354,16 @@ async function loadPlayer(puuid) {
   const watched = data.is_watched;
 
   const meta = p.meta;
+  let teamFragment = '<em>FA</em>';
+  if (meta && meta.current_team) {
+    const logo = meta.current_team_logo_url;
+    teamFragment = logo
+      ? `<img class="team-logo" src="${logo}" alt="${meta.current_team_tag || ''}" onerror="this.style.display='none'"/> ${meta.current_team}`
+      : meta.current_team;
+  }
   const metaLine = meta
-    ? `<span class="muted">·</span> ${proBadge(p)} <span class="muted">·</span> ${meta.current_team || '<em>FA</em>'}${meta.age?` · ${meta.age}y`:''}${meta.country?` · ${meta.country}`:''}${meta.residency?` · ${meta.residency} residency`:''}${meta.contract_end?` · contract ends ${meta.contract_end}`:''}${meta.leaguepedia_url?` · <a href="${meta.leaguepedia_url}" target="_blank" rel="noopener" style="color:var(--accent);">Leaguepedia ↗</a>`:''}`
-    : '<span class="muted">· no Leaguepedia entry (amateur or unmatched)</span>';
+    ? `<span class="muted">·</span> ${proBadge(p)} <span class="muted">·</span> ${teamFragment}${meta.age?` · ${meta.age}y`:''}${meta.country?` · ${meta.country}`:''}${meta.residency?` · ${meta.residency} residency`:''}${meta.contract_end?` · contract ends ${meta.contract_end}`:''}${meta.leaguepedia_url?` · <a href="${meta.leaguepedia_url}" target="_blank" rel="noopener" style="color:var(--accent);">Leaguepedia ↗</a>`:''}`
+    : '<span class="muted">· no pro entry (amateur or unmatched)</span>';
 
   c.innerHTML = `
     <div class="player-header">

@@ -276,6 +276,8 @@ class PlayerMeta(Base):
     age = Column(Integer)                              # cached, recomputed on sync
     role = Column(String)                              # LP role (Top/Jungle/Mid/Bot/Support)
     current_team = Column(String, index=True)         # empty string => Free Agent
+    current_team_tag = Column(String)                  # 2-5 letter team code (e.g. "G2", "KC")
+    current_team_logo_url = Column(String)             # team logo URL for UI badges
     is_retired = Column(Boolean, default=False)
     contract_end = Column(String)                      # ISO date if known (rarely populated)
     is_pro = Column(Boolean, default=False)            # has a LP entry at all

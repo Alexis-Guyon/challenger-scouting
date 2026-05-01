@@ -31,6 +31,9 @@ NEW_COLUMNS = [
     ("champion_pool", "avg_dpm", "FLOAT DEFAULT 0.0"),
     ("champion_pool", "champion_css", "FLOAT DEFAULT 0.0"),
     ("champion_pool", "has_champion_baseline", "BOOLEAN DEFAULT FALSE"),
+    # Team identity (logo for badge rendering)
+    ("player_meta", "current_team_tag", "VARCHAR"),
+    ("player_meta", "current_team_logo_url", "VARCHAR"),
 ]
 
 

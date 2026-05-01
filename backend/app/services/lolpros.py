@@ -175,16 +175,19 @@ def sync_with_lookup(db: Session, lookup: dict[str, dict]) -> dict:
         if rec:
             matched += 1
             team = rec.get("team") or {}
-            current_team_name = team.get("name") or ""
-            tag = team.get("tag") or ""
-            display_team = f"{tag} {current_team_name}".strip() if tag else current_team_name
+            current_team_name = (team.get("name") or "").strip()
+            tag = (team.get("tag") or "").strip()
+            logo_url = ((team.get("logo") or {}).get("url") or "").strip()
             position = rec.get("position") or ""
             role = POSITION_TO_ROLE.get(position)
 
             meta.country = rec.get("country") or meta.country
             meta.residency = "Europe" if (rec.get("account") or {}).get("server") == "EUW" else meta.residency
             meta.role = role or meta.role
-            meta.current_team = display_team
+            # Store the canonical team name only — UI composes "[logo] Name" itself.
+            meta.current_team = current_team_name
+            meta.current_team_tag = tag or None
+            meta.current_team_logo_url = logo_url or None
             meta.is_pro = True
             meta.is_retired = False
             # Lolpros doesn't expose contract end / birthdate publicly; keep

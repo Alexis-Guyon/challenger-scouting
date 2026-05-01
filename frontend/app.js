@@ -190,6 +190,60 @@ function setView(name) {
 }
 navLinks.forEach(a => a.addEventListener('click', e => { e.preventDefault(); setView(a.dataset.view); }));
 
+function pepiteClass(s) {
+  if (s == null) return 's-avg';
+  if (s >= 70) return 's-elite';
+  if (s >= 55) return 's-strong';
+  if (s >= 40) return 's-avg';
+  return 's-weak';
+}
+function pepiteBreakdownHTML(agg) {
+  const score = agg.pepite_score;
+  const bd = agg.pepite_breakdown;
+  if (score == null || !bd) {
+    return '<p class="muted" style="margin:0;font-size:12px;">Not yet computed (run "Recompute scores only" in Admin).</p>';
+  }
+  const W = bd.weights || {percentile:0.4, lobby:0.3, rising:0.2, youth:0.1};
+  function row(label, weight, value, contrib, hint) {
+    const pct = Math.max(0, Math.min(100, value));
+    return `
+      <div class="bar-row" title="${hint || ''}">
+        <span class="lab">${label} <span class="muted" style="font-size:10px;">×${weight}</span></span>
+        <div class="bar"><span style="width:${pct.toFixed(0)}%"></span></div>
+        <span class="num">${value.toFixed(0)} → ${contrib.toFixed(1)}</span>
+      </div>
+    `;
+  }
+  const ageLine = bd.age == null
+    ? '<span class="muted">unknown age (neutral)</span>'
+    : `${bd.age}y → ${bd.youth_pts}`;
+  return `
+    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px;">
+      <span class="score-pill ${pepiteClass(score)}" style="font-size:15px;padding:4px 12px;">💎 ${score.toFixed(1)}</span>
+      <span class="muted" style="font-size:11px;">composite 0..100 · weighted sum below</span>
+    </div>
+    ${row('Percentile', W.percentile, bd.percentile, W.percentile * bd.percentile,
+          'Quality vs (patch, role) cohort. 0..100. Half the score lives here.')}
+    ${row('Lobby', W.lobby, bd.lobby_pts, W.lobby * bd.lobby_pts,
+          'Strength of opponents this player faced. Anchored at 1.0 (=50pts).')}
+    ${row('Rising', W.rising, bd.rising_pts, W.rising * bd.rising_pts,
+          'Patch-over-patch CSS uptrend. 100 if explicitly tagged is_rising_star.')}
+    ${row('Youth', W.youth, bd.youth_pts, W.youth * bd.youth_pts,
+          'U21 bonus: 17yo=100, 24yo+=0.')}
+    <div class="muted" style="font-size:11px;margin-top:8px;line-height:1.5;">
+      Lobby factor: <strong style="color:var(--text);">${bd.lobby_factor.toFixed(3)}</strong>
+      · Rising star: ${bd.is_rising_star ? '✅' : '—'}
+      · Age: ${ageLine}
+    </div>
+  `;
+}
+function pepiteCell(score) {
+  if (score == null) return '<span class="muted">—</span>';
+  const cls = pepiteClass(score);
+  // Subtle 💎 prefix for the strong+ tier so they stand out at a glance
+  const prefix = score >= 55 ? '💎 ' : '';
+  return `<span class="score-pill ${cls}" title="Pépite composite — click View for breakdown">${prefix}${score.toFixed(1)}</span>`;
+}
 function scoreClass(s) {
   if (s >= 75) return 's-elite';
   if (s >= 60) return 's-strong';
@@ -340,7 +394,7 @@ async function loadLeaderboard() {
   document.getElementById('lb-last').onclick  = () => { _lbOffset = (totalPages - 1) * _lbPageSize; loadLeaderboard(); };
 
   if (!data.length) {
-    tbody.innerHTML = `<tr><td colspan="15" class="muted" style="text-align:center;padding:30px;">No players match these filters.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="16" class="muted" style="text-align:center;padding:30px;">No players match these filters.</td></tr>`;
     return;
   }
   data.forEach((row, i) => {
@@ -361,6 +415,7 @@ async function loadLeaderboard() {
       <td>${row.champion_pool_size}</td>
       <td><span class="score-pill ${scoreClass(row.css_score)}">${row.css_score}</span></td>
       <td>${row.percentile_rank == null ? '<span class="muted" title="Cohort too small (<10 players) for a meaningful percentile">—</span>' : 'P'+row.percentile_rank}</td>
+      <td>${pepiteCell(row.pepite_score)}</td>
       <td>
         <span class="star ${watched?'active':''}" data-puuid="${row.puuid}">${watched?'★':'☆'}</span>
         <button data-puuid="${row.puuid}" class="secondary view-player">View</button>
@@ -900,6 +955,13 @@ async function loadPlayer(puuid) {
         `).join('')}
         <p class="muted" style="margin-top:10px;">Sample factor: ${agg.breakdown?.sample_factor?.toFixed(2) ?? '—'} · Smurf factor: ${agg.breakdown?.smurf_factor?.toFixed(2) ?? '—'} · Lobby factor: ${agg.breakdown?.lobby_factor?.toFixed(2) ?? '—'}</p>
       </div>
+      <div class="card">
+        <h3>💎 Pépite breakdown <span class="muted" style="font-size:11px;font-weight:400;">scout-oriented composite</span></h3>
+        ${pepiteBreakdownHTML(agg)}
+      </div>
+    </div>
+
+    <div class="grid-2">
       <div class="card">
         <h3>Scout notes</h3>
         <div id="notes-list" class="note-list"></div>

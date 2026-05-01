@@ -43,6 +43,9 @@ NEW_COLUMNS = [
     ("player_meta", "player_image_url", "VARCHAR"),
     # Rising-star tag (sustained CSS uptrend across N snapshots)
     ("player_aggregates", "is_rising_star", "BOOLEAN DEFAULT 0"),
+    # Pépite composite score (0..100) + breakdown JSON for UI tooltips
+    ("player_aggregates", "pepite_score", "FLOAT DEFAULT 0"),
+    ("player_aggregates", "pepite_breakdown_json", "TEXT"),
 ]
 
 

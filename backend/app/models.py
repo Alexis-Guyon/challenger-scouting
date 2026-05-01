@@ -152,6 +152,11 @@ class PlayerAggregate(Base):
     percentile_rank = Column(Float, default=0)
     is_rising_star = Column(Boolean, default=False)
 
+    # Composite "Pépite" score (0..100). See services/scoring.py
+    # `compute_pepite_score` for the breakdown.
+    pepite_score = Column(Float, default=0, index=True)
+    pepite_breakdown_json = Column(Text, nullable=True)
+
     player = relationship("Player", back_populates="aggregates")
 
     __table_args__ = (

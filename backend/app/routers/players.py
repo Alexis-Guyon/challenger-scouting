@@ -251,6 +251,12 @@ def get_player(
                 "std_gd15": round(a.std_gd15, 1),
             },
             "breakdown": breakdown,
+            "pepite_score": round(a.pepite_score, 1) if a.pepite_score is not None else None,
+            "pepite_breakdown": (
+                __import__("json").loads(a.pepite_breakdown_json)
+                if a.pepite_breakdown_json else None
+            ),
+            "is_rising_star": bool(a.is_rising_star),
         })
 
     pool = (
@@ -428,6 +434,9 @@ def list_players(
 
     if sort == "css":
         q = q.order_by(desc(PlayerAggregate.css_score))
+    elif sort == "pepite":
+        # Composite scout score — see services/scoring.compute_pepite_score
+        q = q.order_by(desc(PlayerAggregate.pepite_score))
     elif sort == "winrate":
         q = q.order_by(desc(PlayerAggregate.wins * 1.0 / PlayerAggregate.games_played))
     elif sort == "games":
@@ -485,6 +494,7 @@ def list_players(
             "percentile_rank": a.percentile_rank,
             "champion_pool_size": a.champion_pool_size,
             "is_rising_star": bool(a.is_rising_star),
+            "pepite_score": round(a.pepite_score, 1) if a.pepite_score is not None else None,
         })
         if len(out) >= limit:
             break

@@ -421,10 +421,6 @@ def score_all(db: Session, min_games: int) -> int:
         by_pr[(a.patch, a.role)].append((a, css_final))
 
     # Percentile rank within (patch, role) cohort.
-    # Guard: with <10 players, the percentile is meaningless (a 2-player
-    # cohort would trivially assign P100 to whichever has higher CSS, even
-    # if their CSS is mediocre). In that case we mark the percentile as
-    # None — the UI then renders a "—" placeholder.
     MIN_COHORT_FOR_PERCENTILE = 10
     for (patch, role), items in by_pr.items():
         items.sort(key=lambda x: x[1])
@@ -436,6 +432,97 @@ def score_all(db: Session, min_games: int) -> int:
             for rank, (a, _) in enumerate(items):
                 a.percentile_rank = round(100 * rank / (total - 1), 1)
 
+    # Pépite composite score (0..100) — combines percentile, lobby factor,
+    # rising-star tag, and youth bonus. See compute_pepite_score().
+    for a in aggs:
+        score, breakdown = compute_pepite_score(db, a)
+        a.pepite_score = score
+        import json as _json
+        a.pepite_breakdown_json = _json.dumps(breakdown)
+
     db.commit()
     logger.info("scored %d player aggregates", len(aggs))
     return len(aggs)
+
+
+# ============================================================
+# "Pépite" composite — a scout-oriented composite score.
+# ============================================================
+
+def compute_pepite_score(db: Session, agg: PlayerAggregate) -> tuple[float, dict]:
+    """Composite 0..100 score that surfaces hidden talent.
+
+    Recipe:
+        0.40 * percentile         — relative quality vs (patch, role) cohort
+        0.30 * lobby_factor_pts   — does he carry STRONG lobbies?
+        0.20 * rising_pts         — patch-over-patch CSS uptrend
+        0.10 * youth_pts          — under-21 bonus
+
+    Each sub-component is normalized to 0..100. Players without enough
+    data on a sub-score get a neutral 50, never 0 — so unknown age
+    doesn't wreck the score for solid amateurs whose Lolpros entry is
+    missing.
+
+    Returns (score, breakdown_dict) for transparency in the UI.
+    """
+    from ..models import PlayerMeta
+
+    # 1. Percentile component (0..100). If cohort was too small we fall
+    #    back to a neutral 50.
+    percentile = agg.percentile_rank if agg.percentile_rank is not None else 50.0
+
+    # 2. Lobby factor — anchored at 1.0 (neutral). Range 0.90..1.10.
+    #    Map to 0..100 with 1.0 → 50, 1.10 → 100, 0.90 → 0.
+    lobby_factor = _lobby_factor_for(db, agg)
+    lobby_pts = max(0.0, min(100.0, (lobby_factor - 0.90) * 500.0))
+
+    # 3. Rising-star pts: 100 if explicitly tagged is_rising_star, else
+    #    we approximate by looking at the most-recent CSS delta vs the
+    #    previous patch in CSSSnapshot history. Default 50 (neutral).
+    rising_pts = 50.0
+    if agg.is_rising_star:
+        rising_pts = 100.0
+    else:
+        from ..models import CSSSnapshot
+        snaps = (
+            db.query(CSSSnapshot)
+            .filter_by(puuid=agg.puuid, role=agg.role)
+            .order_by(CSSSnapshot.snapshot_at.desc())
+            .limit(3).all()
+        )
+        if len(snaps) >= 2:
+            delta = snaps[0].css_score - snaps[-1].css_score
+            # +10 CSS over 3 snapshots = great → 90 pts; -10 = 10 pts; 0 = 50.
+            rising_pts = max(0.0, min(100.0, 50.0 + delta * 4.0))
+
+    # 4. Youth bonus — a 17-year-old prospect is GOLD; >=24 is "set",
+    #    less of a development target. Linear from 17 → 100, 24 → 0.
+    meta = db.get(PlayerMeta, agg.puuid)
+    age = meta.age if meta and meta.age else None
+    if age is None:
+        youth_pts = 50.0  # unknown — neutral
+    elif age <= 17:
+        youth_pts = 100.0
+    elif age >= 24:
+        youth_pts = 0.0
+    else:
+        youth_pts = round((24 - age) / (24 - 17) * 100, 1)
+
+    score = (
+        0.40 * percentile
+        + 0.30 * lobby_pts
+        + 0.20 * rising_pts
+        + 0.10 * youth_pts
+    )
+
+    breakdown = {
+        "percentile": round(percentile, 1),
+        "lobby_factor": round(lobby_factor, 3),
+        "lobby_pts": round(lobby_pts, 1),
+        "rising_pts": round(rising_pts, 1),
+        "youth_pts": round(youth_pts, 1),
+        "age": age,
+        "is_rising_star": bool(agg.is_rising_star),
+        "weights": {"percentile": 0.40, "lobby": 0.30, "rising": 0.20, "youth": 0.10},
+    }
+    return round(score, 1), breakdown

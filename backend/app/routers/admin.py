@@ -16,6 +16,7 @@ from ..services.aggregation import (
 )
 from ..services.ingestion import run_ingestion
 from ..services.leaguepedia import run_leaguepedia_sync_sync
+from ..services.lolpros import run_lolpros_sync_sync
 from ..services.scoring import score_all, score_all_champions, score_all_smurfs
 from ..services.tournament_ingestion import DEFAULT_LEAGUE_SLUGS, run_tournament_sync_sync
 
@@ -153,6 +154,29 @@ def sync_tournaments(
     _jobs[job_id] = {"status": "queued", "step": "queued"}
     background.add_task(_sync_tournaments_job, job_id, slugs, max_events)
     return {"job_id": job_id, "status": "started", "leagues": slugs}
+
+
+def _sync_lolpros_job(job_id: str, server: str):
+    _jobs[job_id] = {"status": "running", "step": "fetching"}
+    try:
+        db = SessionLocal()
+        try:
+            stats = run_lolpros_sync_sync(db, server=server)
+        finally:
+            db.close()
+        _jobs[job_id] = {"status": "done", "step": "done", "stats": stats}
+    except Exception as exc:
+        logger.exception("lolpros sync failed")
+        _jobs[job_id] = {"status": "error", "error": str(exc)}
+
+
+@router.post("/sync-lolpros")
+def sync_lolpros(background: BackgroundTasks, server: str = Query(default="EUW")):
+    """Pull pro player metadata from lolpros.gg (preferred over Leaguepedia)."""
+    job_id = f"lp-{len(_jobs)+1}"
+    _jobs[job_id] = {"status": "queued", "step": "queued"}
+    background.add_task(_sync_lolpros_job, job_id, server)
+    return {"job_id": job_id, "status": "started", "server": server}
 
 
 @router.post("/sync-leaguepedia")

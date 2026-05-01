@@ -129,6 +129,8 @@ function ageCell(p) {
 
 /* ---------------- LEADERBOARD ---------------- */
 let _watchedSet = new Set();
+let _lbOffset = 0;
+const _lbPageSize = 50;
 
 async function refreshWatchedSet() {
   try {
@@ -166,7 +168,8 @@ async function loadLeaderboard() {
   if (patch) params.set('patch', patch);
   params.set('min_games', min);
   params.set('sort', sort);
-  params.set('limit', 500);
+  params.set('limit', _lbPageSize);
+  params.set('offset', _lbOffset);
   if (proStatus === 'pro') params.set('pro_only', 'true');
   if (proStatus === 'fa') params.set('fa', 'true');
   // amateur = pro_only=false handled client-side below
@@ -175,24 +178,41 @@ async function loadLeaderboard() {
   if (contract) params.set('contract_within_days', contract);
 
   await refreshWatchedSet();
-  let data = await API('/players?' + params);
+  let resp = await API('/players?' + params);
+  let data = resp.items || [];
+  const total = resp.total ?? data.length;
 
-  // Client-side post-filter for "amateur only" (no LP entry)
+  // Client-side post-filter for "amateur only" (no LP entry) — note this can shrink the visible page
   if (proStatus === 'amateur') data = data.filter(r => !r.meta);
 
   const tbody = document.querySelector('#lb-table tbody');
   tbody.innerHTML = '';
 
-  // Update / inject a "showing N players" counter under the filters bar
-  let counter = document.getElementById('lb-counter');
-  if (!counter) {
-    counter = document.createElement('p');
-    counter.id = 'lb-counter';
-    counter.className = 'muted';
-    counter.style.cssText = 'margin:0 0 10px;font-size:12px;';
-    document.querySelector('.filters').after(counter);
+  // Update / inject the pagination + counter row under the filters bar
+  let pager = document.getElementById('lb-pager');
+  if (!pager) {
+    pager = document.createElement('div');
+    pager.id = 'lb-pager';
+    pager.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin:0 0 10px;font-size:12px;color:var(--muted);';
+    document.querySelector('.filters').after(pager);
   }
-  counter.textContent = `Showing ${data.length} player${data.length>1?'s':''} (capped at 500). Tweak Min games / role / patch to widen or narrow.`;
+  const startIdx = _lbOffset + 1;
+  const endIdx = _lbOffset + data.length;
+  const totalPages = Math.max(1, Math.ceil(total / _lbPageSize));
+  const currentPage = Math.floor(_lbOffset / _lbPageSize) + 1;
+  pager.innerHTML = `
+    <span>Showing <b>${startIdx}–${endIdx}</b> of <b>${total}</b> matching aggregates (page ${currentPage}/${totalPages})</span>
+    <span>
+      <button id="lb-first" class="secondary" ${_lbOffset===0?'disabled':''}>« First</button>
+      <button id="lb-prev"  class="secondary" ${_lbOffset===0?'disabled':''}>‹ Prev</button>
+      <button id="lb-next"  class="secondary" ${endIdx>=total?'disabled':''}>Next ›</button>
+      <button id="lb-last"  class="secondary" ${endIdx>=total?'disabled':''}>Last »</button>
+    </span>
+  `;
+  document.getElementById('lb-first').onclick = () => { _lbOffset = 0; loadLeaderboard(); };
+  document.getElementById('lb-prev').onclick  = () => { _lbOffset = Math.max(0, _lbOffset - _lbPageSize); loadLeaderboard(); };
+  document.getElementById('lb-next').onclick  = () => { _lbOffset = _lbOffset + _lbPageSize; loadLeaderboard(); };
+  document.getElementById('lb-last').onclick  = () => { _lbOffset = (totalPages - 1) * _lbPageSize; loadLeaderboard(); };
 
   if (!data.length) {
     tbody.innerHTML = `<tr><td colspan="15" class="muted" style="text-align:center;padding:30px;">No players match these filters.</td></tr>`;
@@ -202,7 +222,7 @@ async function loadLeaderboard() {
     const watched = _watchedSet.has(row.puuid);
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${i + 1}</td>
+      <td>${_lbOffset + i + 1}</td>
       <td><strong>${row.summoner_name || '(unknown)'}</strong> ${smurfBadge(row)}</td>
       <td>${proBadge(row)}</td>
       <td>${teamCell(row)}</td>
@@ -231,7 +251,10 @@ async function loadLeaderboard() {
   );
 }
 function initLeaderboard() {
-  document.getElementById('f-apply').addEventListener('click', loadLeaderboard);
+  document.getElementById('f-apply').addEventListener('click', () => {
+    _lbOffset = 0;  // reset to first page when filters change
+    loadLeaderboard();
+  });
   loadLeaderboard();
 }
 
@@ -605,6 +628,20 @@ function initAdmin() {
     const r = await API('/admin/recompute', { method: 'POST' });
     log.textContent += JSON.stringify(r, null, 2) + '\n';
     refreshStats();
+  });
+
+  document.getElementById('a-lolpros').addEventListener('click', async () => {
+    log.textContent = 'Syncing Lolpros (EUW pros)...\n';
+    const r = await API('/admin/sync-lolpros?server=EUW', { method: 'POST' });
+    log.textContent += `Job ${r.job_id} started.\n`;
+    const poll = setInterval(async () => {
+      try {
+        const j = await API('/admin/jobs/' + r.job_id);
+        log.textContent += `[${new Date().toLocaleTimeString()}] ${j.status} - ${j.step || ''}${j.stats ? ' · ' + JSON.stringify(j.stats) : ''}\n`;
+        log.scrollTop = log.scrollHeight;
+        if (j.status === 'done' || j.status === 'error') { clearInterval(poll); refreshStats(); }
+      } catch { clearInterval(poll); }
+    }, 2000);
   });
 
   document.getElementById('a-leaguepedia').addEventListener('click', async () => {

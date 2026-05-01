@@ -195,7 +195,8 @@ def list_players(
     patch: str | None = None,
     min_games: int = Query(default=None),
     sort: str = "css",
-    limit: int = 100,
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     # --- Advanced scouting filters (PlayerMeta) ---
     fa: bool | None = Query(default=None, description="Free agents only (no current team)"),
     contract_within_days: int | None = Query(default=None, description="Contract ending within N days"),
@@ -261,7 +262,10 @@ def list_players(
     else:
         q = q.order_by(desc(PlayerAggregate.css_score))
 
-    rows = q.limit(limit).all()
+    # Total count for pagination — same query without limit/offset
+    total = q.count()
+
+    rows = q.offset(offset).limit(limit + 50).all()  # +50 buffer for de-dup loss
     seen = set()
     out = []
     for a, p in rows:
@@ -279,4 +283,11 @@ def list_players(
             "percentile_rank": a.percentile_rank,
             "champion_pool_size": a.champion_pool_size,
         })
-    return out
+        if len(out) >= limit:
+            break
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "items": out,
+    }

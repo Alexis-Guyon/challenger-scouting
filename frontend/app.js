@@ -777,12 +777,25 @@ async function loadPlayer(puuid) {
     ? `<span class="muted">·</span> ${proBadge(p)} <span class="muted">·</span> ${teamFragment}${meta.age?` · ${meta.age}y`:''}${meta.country?` · ${meta.country}`:''}${meta.residency?` · ${meta.residency} residency`:''}${meta.contract_end?` · contract ends ${meta.contract_end}`:''}${meta.leaguepedia_url?` · <a href="${meta.leaguepedia_url}" target="_blank" rel="noopener" style="color:var(--accent);">Leaguepedia ↗</a>`:''}`
     : '<span class="muted">· no pro entry (amateur or unmatched)</span>';
 
+  // Header avatar: prefer the LP headshot when present, fall back to the
+  // primary Riot profile-icon, then to a placeholder if neither.
+  const headerAvatarUrl = (meta && meta.player_image_url)
+    || (meta && (meta.accounts || [])[0]
+        ? profileIconUrl((meta.accounts || [])[0].profile_icon_id)
+        : null);
+  const headerAvatar = headerAvatarUrl
+    ? `<img class="header-avatar" src="${headerAvatarUrl}" alt="" onerror="this.style.display='none'"/>`
+    : '<div class="header-avatar placeholder">?</div>';
+
   c.innerHTML = `
     <div class="player-header">
-      <div>
-        <h2>${p.summoner_name} ${smurfBadge(p)} <span class="star ${watched?'active':''}" id="profile-star" data-puuid="${puuid}" style="font-size:22px;margin-left:8px;">${watched?'★':'☆'}</span></h2>
-        <div class="muted">${(p.region||'').toUpperCase()} · ${p.tier || '—'} ${p.lp ? p.lp + ' LP' : ''} · Account lvl ${p.account_level || '?'}</div>
-        <div style="margin-top:6px;font-size:13px;">${metaLine}</div>
+      <div style="display:flex;align-items:center;gap:14px;flex:1;min-width:0;">
+        ${headerAvatar}
+        <div style="flex:1;min-width:0;">
+          <h2 style="margin:0 0 2px;">${p.summoner_name} ${smurfBadge(p)} <span class="star ${watched?'active':''}" id="profile-star" data-puuid="${puuid}" style="font-size:22px;margin-left:8px;">${watched?'★':'☆'}</span></h2>
+          <div class="muted">${(p.region||'').toUpperCase()} · ${p.tier || '—'} ${p.lp ? p.lp + ' LP' : ''} · Account lvl ${p.account_level || '?'}</div>
+          <div style="margin-top:6px;font-size:13px;">${metaLine}</div>
+        </div>
       </div>
       <div style="text-align:right">
         <div style="font-size:32px;font-weight:800;">${agg.css_score}</div>

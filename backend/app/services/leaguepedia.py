@@ -216,17 +216,151 @@ def _build_birthdate(infobox: dict) -> str | None:
 
 
 def _resolve_image_filename(infobox: dict, page_title: str) -> str | None:
-    """Return the image filename (without prefix). Falls back to <id>.png when auto."""
+    """
+    Return the image filename hint (without prefix). Just a guess at this stage —
+    the wiki may store the headshot as .jpg, .png, .webp, or under a slightly
+    different name. _resolve_image_url_for() does the actual lookup.
+    """
     explicit = infobox.get("image")
     if explicit:
-        # Strip leading File: or Image: prefixes
         explicit = explicit.split("|")[0].strip()
         explicit = explicit.removeprefix("File:").removeprefix("Image:")
         return explicit
-    # Auto-image: filename is the player page id with spaces preserved
     if infobox.get("checkboxautoimage", "").lower() in ("yes", "true", "1"):
-        # Use the page title (the canonical name, e.g. "Hans_sama")
-        return f"{page_title.replace('_', ' ')}.png"
+        return page_title.replace("_", " ")  # caller appends extensions
+    return None
+
+
+def _resolve_image_url_for(name_or_filename: str) -> str | None:
+    """
+    Given a player canonical name OR a filename hint, try a list of common
+    extensions and the auto-image patterns and return the first CDN URL that
+    actually exists on the wiki. Calls action=query&prop=imageinfo to verify.
+
+    Returns the direct static.wikia.nocookie.net URL (no Special:FilePath
+    redirect, no 403 from anti-bot heuristics).
+    """
+    if not name_or_filename:
+        return None
+    import httpx
+
+    # Strip any extension to get the base name, then try multiple variants.
+    base = name_or_filename
+    for ext in (".jpg", ".png", ".webp", ".jpeg", ".gif"):
+        if base.lower().endswith(ext):
+            base = base[: -len(ext)]
+            break
+
+    # Build candidate filenames
+    candidates: list[str] = []
+    for ext in ("jpg", "png", "webp"):
+        candidates.append(f"{base}.{ext}")
+        if " " in base:
+            candidates.append(f"{base.replace(' ', '_')}.{ext}")
+        # Capitalize each word ("Hans Sama" / "Hans sama")
+        cap = " ".join(w.capitalize() for w in base.split(" "))
+        if cap != base:
+            candidates.append(f"{cap}.{ext}")
+
+    titles = "|".join(f"File:{c.replace(' ', '_')}" for c in candidates[:9])  # API caps at ~50
+
+    try:
+        with httpx.Client(timeout=10.0, headers={"User-Agent": USER_AGENT}) as client:
+            r = client.get(
+                f"https://{LP_HOST}/api.php",
+                params={
+                    "action": "query",
+                    "titles": titles,
+                    "prop": "imageinfo",
+                    "iiprop": "url",
+                    "format": "json",
+                    "formatversion": "2",
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+    except Exception as exc:
+        logger.warning("image lookup failed for %r: %s", base, exc)
+        return None
+
+    for p in data.get("query", {}).get("pages", []) or []:
+        if p.get("missing"):
+            continue
+        info = p.get("imageinfo") or []
+        if info and info[0].get("url"):
+            return info[0]["url"]
+    return None
+
+
+def _find_image_via_page_search(canonical_name: str) -> str | None:
+    """
+    Last-resort fallback when no direct <id>.{jpg,png,webp} file exists:
+    list all images embedded on the player's wiki page and return the first
+    one whose filename contains the player name (so we skip team logos,
+    splash arts, audio files, etc.).
+    """
+    if not canonical_name:
+        return None
+    import httpx
+
+    title = canonical_name.replace(" ", "_")
+    name_token = canonical_name.split()[0].lower()  # primary name token
+    try:
+        with httpx.Client(timeout=12.0, headers={"User-Agent": USER_AGENT}) as client:
+            r = client.get(
+                f"https://{LP_HOST}/api.php",
+                params={
+                    "action": "parse",
+                    "page": title,
+                    "prop": "images",
+                    "format": "json",
+                    "redirects": "1",
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+    except Exception as exc:
+        logger.warning("page-image search failed for %r: %s", canonical_name, exc)
+        return None
+
+    images = (data.get("parse") or {}).get("images") or []
+    candidates = [
+        img for img in images
+        if name_token in img.lower()
+        and not any(skip in img.lower() for skip in ("logo", ".mp3", ".ogg", ".svg", "square", "icon"))
+        and img.lower().endswith((".jpg", ".jpeg", ".png", ".webp"))
+    ]
+    if not candidates:
+        return None
+
+    # Prefer the most recent / portrait-style image (heuristic: shorter names
+    # like "Hans_sama.jpg" beat verbose "Hans_sama_2024_Split_2_Valentine.jpg")
+    candidates.sort(key=lambda x: (len(x), x))
+
+    # Now resolve the first candidate to its CDN URL
+    pick = candidates[0]
+    try:
+        with httpx.Client(timeout=10.0, headers={"User-Agent": USER_AGENT}) as client:
+            r = client.get(
+                f"https://{LP_HOST}/api.php",
+                params={
+                    "action": "query",
+                    "titles": f"File:{pick}",
+                    "prop": "imageinfo",
+                    "iiprop": "url",
+                    "format": "json",
+                    "formatversion": "2",
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+    except Exception:
+        return None
+    pages = data.get("query", {}).get("pages", [])
+    if pages and not pages[0].get("missing"):
+        info = pages[0].get("imageinfo") or []
+        if info:
+            return info[0].get("url")
     return None
 
 
@@ -278,9 +412,16 @@ def fetch_player_via_parse(canonical_name: str) -> dict | None:
     # Try to detect retired status from common fields
     is_retired = info.get("isretired", "no").lower() in ("yes", "true", "1")
 
-    # Image filename — use page title (canonical) for auto-image fallback
+    # Image — try the obvious filenames first (<id>.jpg/png/webp). If none
+    # exists, fall back to scanning the page's embedded images for one
+    # whose filename mentions the player name (catches photos like
+    # "Hans Sama EU LCS 2018 Valentine.jpg").
     page_title = page.get("title") or canonical_name
-    image_file = _resolve_image_filename(info, page_title)
+    canonical = page_title.replace("_", " ")
+    image_hint = _resolve_image_filename(info, page_title)
+    image_url = _resolve_image_url_for(image_hint or canonical)
+    if not image_url:
+        image_url = _find_image_via_page_search(canonical)
 
     return {
         "Player": info.get("id") or page_title.replace("_", " "),
@@ -294,7 +435,8 @@ def fetch_player_via_parse(canonical_name: str) -> dict | None:
         "IsRetired": "1" if is_retired else "0",
         "SoloqueueIds": info.get("ids", "").replace("\n", ";"),
         "ContractEnd": info.get("contract") or info.get("contractend") or None,
-        "Image": image_file,
+        "Image": image_hint,         # raw filename hint (back-compat)
+        "ImageUrl": image_url,       # verified direct CDN URL (preferred)
     }
 
 
@@ -721,10 +863,19 @@ def sync_players_with_lookup(db: Session, lookup: dict[str, dict]) -> dict:
                 rec.get("NationalityPrimary") or meta.nationality_primary
             )
 
+            # Prefer the verified direct CDN URL (set by the wikitext path —
+            # we already confirmed the file exists). Fall back to Special:FilePath
+            # for Cargo-derived filenames, which may 404 silently.
+            verified_url = rec.get("ImageUrl")
             image_filename = (rec.get("Image") or "").strip()
-            if image_filename:
+            if verified_url:
+                meta.player_image_url = verified_url
+                images_found += 1
+            elif image_filename:
                 meta.player_image_url = _file_path_url(image_filename)
                 images_found += 1
+            else:
+                meta.player_image_url = None  # explicitly clear when no photo found
 
             if not meta.country:
                 meta.country = rec.get("Country") or None

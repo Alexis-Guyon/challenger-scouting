@@ -1148,11 +1148,16 @@ function initAdmin() {
   document.getElementById('a-ingest').addEventListener('click', async () => {
     const players = document.getElementById('a-players').value;
     const matches = document.getElementById('a-matches').value;
+    const tiers = [];
+    if (document.getElementById('a-tier-challenger').checked) tiers.push('challenger');
+    if (document.getElementById('a-tier-grandmaster').checked) tiers.push('grandmaster');
+    if (document.getElementById('a-tier-master').checked) tiers.push('master');
+    if (!tiers.length) { alert('Select at least one tier (Challenger / GM / Master).'); return; }
     const progressBar = document.getElementById('a-progress');
     progressBar.style.display = 'block';
     progressBar.textContent = 'Starting…';
-    log.textContent = `Starting ingest (${players} players × ${matches} matches)…\n`;
-    const r = await API(`/admin/ingest?player_limit=${players}&matches_per_player=${matches}`, { method: 'POST' });
+    log.textContent = `Starting ingest — tiers: ${tiers.join(', ')} · ${players}/tier × ${matches} matches\n`;
+    const r = await API(`/admin/ingest?player_limit=${players}&matches_per_player=${matches}&tiers=${tiers.join(',')}`, { method: 'POST' });
     log.textContent += `Job ${r.job_id} started.\n`;
     const poll = setInterval(async () => {
       try {

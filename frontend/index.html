@@ -281,12 +281,24 @@
       <h3>Pipeline control</h3>
       <p class="muted">Pulls Challenger players → matches → timelines → metrics → CSS scores.</p>
       <div class="row">
-        <label>Players
+        <label>Players (per tier)
           <input id="a-players" type="number" value="50" min="1" max="400"/>
         </label>
         <label>Matches per player
           <input id="a-matches" type="number" value="30" min="1" max="100"/>
         </label>
+        <fieldset style="border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12px;">
+          <legend style="color:var(--muted);padding:0 6px;">Tiers</legend>
+          <label style="display:inline-flex;align-items:center;gap:5px;margin-right:10px;font-size:12px;">
+            <input id="a-tier-challenger" type="checkbox" checked/> Challenger
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:5px;margin-right:10px;font-size:12px;">
+            <input id="a-tier-grandmaster" type="checkbox"/> GM
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:5px;font-size:12px;">
+            <input id="a-tier-master" type="checkbox"/> Master
+          </label>
+        </fieldset>
         <button id="a-ingest">Run ingestion</button>
         <button id="a-recompute" class="secondary">Recompute scores only</button>
         <button id="a-lolpros">Sync Lolpros (EU pros)</button>

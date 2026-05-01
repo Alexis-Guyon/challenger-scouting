@@ -26,15 +26,13 @@ def patch_from_version(game_version: str) -> str:
     return ".".join(parts[:2]) if len(parts) >= 2 else game_version
 
 
-async def ingest_challenger_players(client: RiotClient, db: Session, limit: int = 50) -> list[Player]:
-    """Pull challenger league + (optionally) GM, persist player rows."""
-    league = await client.challenger_league()
-    entries = league.get("entries", [])[:limit]
-
+async def _ingest_league_entries(
+    client: RiotClient, db: Session, entries: list[dict], tier_label: str,
+) -> list[Player]:
+    """Persist a list of league/v4 entries as Player + RankSnapshot rows."""
     players: list[Player] = []
     now = datetime.now(timezone.utc)
     for e in entries:
-        # Riot moved league/v4 entries to PUUID-only (2024+). Some regions still expose summonerId.
         puuid = e.get("puuid")
         sid = e.get("summonerId")
         if not puuid and not sid:
@@ -59,7 +57,7 @@ async def ingest_challenger_players(client: RiotClient, db: Session, limit: int 
         if not p:
             p = Player(puuid=puuid)
             db.add(p)
-        # Resolve real Riot ID (gameName#tagLine) via account-v1
+
         riot_name = None
         try:
             acct = await client.account_by_puuid(puuid)
@@ -83,7 +81,7 @@ async def ingest_challenger_players(client: RiotClient, db: Session, limit: int 
 
         snap = RankSnapshot(
             puuid=puuid,
-            tier="CHALLENGER",
+            tier=tier_label,
             rank=e.get("rank", "I"),
             lp=e.get("leaguePoints", 0),
             wins=e.get("wins", 0),
@@ -93,8 +91,41 @@ async def ingest_challenger_players(client: RiotClient, db: Session, limit: int 
         db.add(snap)
         players.append(p)
     db.commit()
-    logger.info("ingested %d challenger players", len(players))
+    logger.info("ingested %d %s players", len(players), tier_label.lower())
     return players
+
+
+async def ingest_tier_players(
+    client: RiotClient, db: Session, tier: str, limit: int = 50,
+) -> list[Player]:
+    """
+    Pull players for a given tier (challenger / grandmaster / master).
+    Master leagues are huge (~30k entries on EUW); always cap with `limit`.
+    """
+    tier = (tier or "challenger").lower()
+    if tier == "challenger":
+        league = await client.challenger_league()
+        label = "CHALLENGER"
+    elif tier in ("grandmaster", "gm"):
+        league = await client.grandmaster_league()
+        label = "GRANDMASTER"
+    elif tier == "master":
+        league = await client.master_league()
+        label = "MASTER"
+    else:
+        raise ValueError(f"unknown tier: {tier}")
+
+    entries = league.get("entries", [])
+    # Sort by LP desc so when we cap at `limit` we keep the strongest players,
+    # not a random alphabetic slice.
+    entries.sort(key=lambda x: -(x.get("leaguePoints") or 0))
+    entries = entries[:limit]
+    return await _ingest_league_entries(client, db, entries, label)
+
+
+# Back-compat alias used by older callers
+async def ingest_challenger_players(client: RiotClient, db: Session, limit: int = 50) -> list[Player]:
+    return await ingest_tier_players(client, db, "challenger", limit=limit)
 
 
 async def ingest_player_matches(client: RiotClient, db: Session, puuid: str, count: int = 30):
@@ -195,23 +226,44 @@ async def run_ingestion(
     player_limit: int = 30,
     matches_per_player: int | None = None,
     progress_cb=None,
+    tiers: list[str] | None = None,
 ):
     """
     Run the full SoloQ ingestion pipeline.
 
-    progress_cb(idx, total, summoner_name, new_matches) lets the caller
-    surface a progress indicator. Called once per player.
+    `tiers` selects which league(s) to pull from. Defaults to ['challenger'].
+    Supported: 'challenger', 'grandmaster', 'master'.
+    `player_limit` is applied PER TIER (so player_limit=200 + 3 tiers = up to
+    600 players this run). The Master league is huge (~30k entries on EUW);
+    we sort by LP desc and slice to player_limit so the highest-LP Masters
+    are picked first.
 
     Resumability: ingest_player_matches() already skips matches already in DB,
     so re-running an interrupted ingestion naturally picks up where it stopped.
     """
     matches_per_player = matches_per_player or settings.match_history_count
+    tiers = [t.lower() for t in (tiers or ["challenger"])]
+
     async with RiotClient() as client:
         db = SessionLocal()
         try:
-            players = await ingest_challenger_players(client, db, limit=player_limit)
-            total = len(players)
-            for idx, p in enumerate(players, start=1):
+            all_players: list[Player] = []
+            seen: set[str] = set()
+            for tier in tiers:
+                try:
+                    tier_players = await ingest_tier_players(client, db, tier, limit=player_limit)
+                except Exception as exc:
+                    logger.exception("league fetch failed for tier=%s: %s", tier, exc)
+                    continue
+                # Dedupe across tiers (a player can only be in one league at a time
+                # but pagination + race conditions could overlap; cheap to guard).
+                for p in tier_players:
+                    if p.puuid not in seen:
+                        seen.add(p.puuid)
+                        all_players.append(p)
+
+            total = len(all_players)
+            for idx, p in enumerate(all_players, start=1):
                 new_count = 0
                 try:
                     new_count = await ingest_player_matches(client, db, p.puuid, count=matches_per_player)

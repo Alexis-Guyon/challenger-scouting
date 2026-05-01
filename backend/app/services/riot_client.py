@@ -120,6 +120,10 @@ class RiotClient:
         host = PLATFORM_HOSTS[self.platform]
         return await self._get(host, f"/lol/league/v4/grandmasterleagues/by-queue/{queue}")
 
+    async def master_league(self, queue: str = "RANKED_SOLO_5x5") -> dict:
+        host = PLATFORM_HOSTS[self.platform]
+        return await self._get(host, f"/lol/league/v4/masterleagues/by-queue/{queue}")
+
     async def summoner_by_id(self, summoner_id: str) -> dict:
         host = PLATFORM_HOSTS[self.platform]
         return await self._get(host, f"/lol/summoner/v4/summoners/{summoner_id}")

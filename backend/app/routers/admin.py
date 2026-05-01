@@ -34,6 +34,7 @@ def _run_pipeline_job(
     auto_resolve_names: bool = True,
     auto_resolve_max: int = 500,
     send_alerts: bool = True,
+    tiers: list[str] | None = None,
 ):
     _jobs[job_id] = {"status": "running", "step": "ingest"}
 
@@ -50,6 +51,7 @@ def _run_pipeline_job(
             player_limit=player_limit,
             matches_per_player=matches_per_player,
             progress_cb=_on_player_done,
+            tiers=tiers,
         ))
 
         # Auto-resolve stub players that just got auto-imported as opponents.
@@ -118,27 +120,42 @@ def start_ingest(
     background: BackgroundTasks,
     player_limit: int = Query(default=20, ge=1, le=400),
     matches_per_player: int = Query(default=20, ge=1, le=100),
-    auto_resolve_names: bool = Query(default=True, description="Run /resolve-names automatically after ingest"),
-    auto_alerts: bool = Query(default=True, description="Send Discord/Slack alerts after ingest"),
+    tiers: str = Query(
+        default="challenger",
+        description="Comma-separated tiers to ingest: challenger,grandmaster,master",
+    ),
+    auto_resolve_names: bool = Query(default=True),
+    auto_alerts: bool = Query(default=True),
 ):
     """
-    Pull Challenger players + their match history. Now safer for large batches:
-    - player_limit up to 400 (the full Challenger ladder is ~300, GM ~700)
-    - matches_per_player up to 100
-    - resume: ingest_player_matches already skips matches that are already in DB,
-      so re-running an interrupted job naturally picks up where it stopped.
+    Pull players + their match history. `tiers` lets you ingest GM and Master
+    in addition to Challenger (Riot's three highest tiers; everything below is
+    /entries/by-rank with much heavier pagination — out of scope here).
+
+    `player_limit` is applied PER TIER. So player_limit=200 + tiers=challenger,
+    grandmaster,master = up to 600 players this run.
+
+    Master is sorted by LP desc and capped to `player_limit` so the strongest
+    Masters land in the DB first (full Master = ~30k entries on EUW, way too
+    much for one run).
     """
+    tier_list = [t.strip().lower() for t in tiers.split(",") if t.strip()]
+    valid = {"challenger", "grandmaster", "master"}
+    invalid = [t for t in tier_list if t not in valid]
+    if invalid:
+        from fastapi import HTTPException
+        raise HTTPException(400, f"unknown tier(s): {invalid}; valid: challenger, grandmaster, master")
+
     job_id = f"job-{len(_jobs)+1}"
     _jobs[job_id] = {
-        "status": "queued",
-        "step": "queued",
-        "params": {"player_limit": player_limit, "matches_per_player": matches_per_player},
+        "status": "queued", "step": "queued",
+        "params": {"player_limit": player_limit, "matches_per_player": matches_per_player, "tiers": tier_list},
     }
     background.add_task(
         _run_pipeline_job, job_id, player_limit, matches_per_player,
-        auto_resolve_names, 500, auto_alerts,
+        auto_resolve_names, 500, auto_alerts, tier_list,
     )
-    return {"job_id": job_id, "status": "started"}
+    return {"job_id": job_id, "status": "started", "tiers": tier_list}
 
 
 @router.get("/jobs/{job_id}")

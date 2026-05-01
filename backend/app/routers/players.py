@@ -37,6 +37,13 @@ def _serialize_player(p: Player, db: Session) -> dict:
                 profile = _json.loads(meta.lolpros_profile_json)
             except Exception:
                 profile = None
+
+        def _https(url: str | None) -> str | None:
+            if not url:
+                return url
+            if url.startswith("http://"):
+                return "https://" + url[len("http://"):]
+            return url
         meta_payload = {
             "leaguepedia_id": meta.leaguepedia_id,
             "leaguepedia_url": meta.leaguepedia_url,
@@ -49,7 +56,7 @@ def _serialize_player(p: Player, db: Session) -> dict:
             "lp_role": meta.role,
             "current_team": meta.current_team,
             "current_team_tag": meta.current_team_tag,
-            "current_team_logo_url": meta.current_team_logo_url,
+            "current_team_logo_url": _https(meta.current_team_logo_url),
             "is_fa": (meta.current_team or "") == "" and not meta.is_retired,
             "is_retired": meta.is_retired,
             "contract_end": meta.contract_end,
@@ -60,7 +67,7 @@ def _serialize_player(p: Player, db: Session) -> dict:
                     "name": pt.get("name"),
                     "tag": pt.get("tag"),
                     "slug": pt.get("slug"),
-                    "logo_url": (pt.get("logo") or {}).get("url"),
+                    "logo_url": _https((pt.get("logo") or {}).get("url")),
                     "join_date": pt.get("join_date"),
                     "leave_date": pt.get("leave_date"),
                 }
@@ -90,7 +97,7 @@ def _serialize_player(p: Player, db: Session) -> dict:
                     "name": lg.get("name"),
                     "shorthand": lg.get("shorthand"),
                     "slug": lg.get("slug"),
-                    "logo_url": (lg.get("logo") or {}).get("url"),
+                    "logo_url": _https((lg.get("logo") or {}).get("url")),
                 }
                 for lg in (profile or {}).get("leagues", []) or []
             ],

@@ -201,6 +201,11 @@ def sync_with_lookup(db: Session, lookup: dict[str, dict], fetch_profiles: bool 
             current_team_name = (team.get("name") or "").strip()
             tag = (team.get("tag") or "").strip()
             logo_url = ((team.get("logo") or {}).get("url") or "").strip()
+            # Some Lolpros logos come back as http://res.cloudinary.com/... which
+            # browsers block as mixed-content over https. Cloudinary supports
+            # both — force https.
+            if logo_url.startswith("http://"):
+                logo_url = "https://" + logo_url[len("http://"):]
             position = rec.get("position") or ""
             role = POSITION_TO_ROLE.get(position)
             slug = rec.get("slug")

@@ -1,14 +1,16 @@
 """
-Tiny ad-hoc migration script for SQLite. Adds new columns to existing tables
-that have evolved since previous deployments. Idempotent.
+Tiny ad-hoc migration script for SQLite + Postgres. Adds new columns to
+existing tables that have evolved since previous deployments. Idempotent.
 
-Run after model changes:
-    python migrate.py
+Run after model changes (from the `backend/` directory):
+    python scripts/migrate.py
 """
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+# This script lives in backend/scripts/ and needs to import from the `app/`
+# package one level up.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import inspect, text
 

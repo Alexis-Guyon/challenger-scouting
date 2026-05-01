@@ -1,9 +1,12 @@
 # Deployment guide
 
 This app is a stateful Python (FastAPI) backend with SQLite or Postgres, plus
-a static frontend served from the same origin. Long-running ingestion jobs
-mean **serverless platforms (Vercel, Cloudflare Workers, AWS Lambda) won't
-work**. Pick one of the options below.
+a static frontend served from the same origin.
+
+The backend can NOT run on serverless platforms (Vercel, Cloudflare Workers,
+AWS Lambda) because of the 60 s execution cap and the in-memory job tracker.
+Pick one of the persistent-container options A–D below for the backend. If
+you specifically want Vercel for the frontend only, see option E.
 
 ## Option A — Railway (recommended for MVP)
 
@@ -38,7 +41,7 @@ railway open
 
 After first deploy, SSH in and create the admin user:
 ```bash
-railway run python seed_admin.py admin <strong-password> admin g2
+railway run python scripts/seed_admin.py admin <strong-password> admin g2
 ```
 
 ## Option B — Fly.io
@@ -66,7 +69,7 @@ fly postgres attach --app challenger-scouting scouting-db
 # (this auto-sets DATABASE_URL secret)
 
 fly deploy
-fly ssh console -C "python seed_admin.py admin <strong-password> admin g2"
+fly ssh console -C "python scripts/seed_admin.py admin <strong-password> admin g2"
 ```
 
 ## Option C — Render
@@ -80,7 +83,7 @@ tool), git push deploy, Postgres built-in.
    - Web service (Docker)
    - Postgres database
 4. Fill in `RIOT_API_KEY`, `FANDOM_USERNAME`, `FANDOM_PASSWORD` in the prompt
-5. After deploy, open Shell tab → `python seed_admin.py admin <pwd> admin g2`
+5. After deploy, open Shell tab → `python scripts/seed_admin.py admin <pwd> admin g2`
 
 ## Option D — Self-hosted VPS (Hetzner / Scaleway / Digital Ocean)
 
@@ -96,30 +99,62 @@ cp backend/.env.example backend/.env
 # Edit backend/.env: set RIOT_API_KEY, JWT_SECRET, FANDOM_USERNAME, FANDOM_PASSWORD
 
 docker compose up -d
-docker compose exec app python seed_admin.py admin <pwd> admin g2
+docker compose exec app python scripts/seed_admin.py admin <pwd> admin g2
 
 # Optional: Caddy reverse proxy with auto-HTTPS
 # (one-line install: sudo apt install caddy, then add a Caddyfile)
 ```
 
-## Option E — Vercel (NOT recommended — explained)
+## Option E — Hybrid: Vercel (frontend) + Fly/Railway (backend)
 
-Vercel runs only **stateless serverless functions** (max 60 s execution time
-on Pro). This app has:
+Vercel can host the frontend as a static site — but **NOT the backend**
+(serverless functions cap at 60 s, our ingestion jobs run 5-15 min and the
+in-memory `_jobs` tracker requires a persistent process).
 
-- 5-15 minute ingestion jobs (Riot SoloQ + Leaguepedia + lolesports)
-- In-memory job tracking dict (`_jobs` in `routers/admin.py`)
-- SQLite or pooled Postgres connections (no per-invocation cold-start tolerance)
+So the recipe is: deploy the backend to Fly/Railway/Render (options A-C
+above) and put **only the frontend** on Vercel pointing at it.
 
-If you must use Vercel:
-- **Frontend only** on Vercel (push `frontend/` as a static deploy with
-  `vercel --prod`)
-- **Backend on Railway/Fly/Render** (one of the options above)
-- Set `API_BASE_URL` in `frontend/app.js` to point at the backend URL
-- Configure CORS in `backend/app/main.py` to whitelist the Vercel domain
+### 1. Deploy the backend somewhere persistent
+Pick option A, B, C or D and complete those steps. Note the public URL of
+your backend, e.g. `https://challenger-scouting.fly.dev`.
 
-This split adds complexity for no real benefit — the frontend is 3 vanilla-JS
-files, you save no build time. **Keep them together** on one of options A-D.
+### 2. Tell the frontend where the backend lives
+Edit `frontend/index.html` — there's a small inline script in `<head>`:
+```html
+<script>
+  window.SCOUTING_API_BASE = "https://challenger-scouting.fly.dev";
+</script>
+```
+Replace the URL with your actual backend host (no trailing slash). When this
+is empty, the frontend assumes same-origin (the bundled FastAPI deploy).
+
+### 3. Deploy the frontend to Vercel
+```bash
+# Install once
+npm i -g vercel
+
+# From the project root
+cd frontend
+vercel               # first run: pick "yes" to link, default settings
+vercel --prod        # deploy to a public URL
+```
+Vercel auto-detects the static files. The `frontend/vercel.json` already adds
+sane caching headers and security headers.
+
+### 4. Allow the Vercel origin in backend CORS
+Already handled — `backend/app/main.py` has an
+`allow_origin_regex` that accepts any `*.vercel.app` host plus localhost.
+If you use a custom domain, extend the regex.
+
+### 5. Verify
+Open your `*.vercel.app` URL → login screen. The browser will fetch
+`<backend-host>/auth/login` and JWT-authenticate against the persistent
+backend. All other endpoints (players, watchlist, admin) follow the same
+pattern automatically.
+
+> Heads-up: with a Bearer-token auth model + permissive CORS, this is fine
+> for an internal scouting tool. If you ever switch to cookie auth, lock the
+> CORS regex down to your specific Vercel hostnames.
 
 ## Environment variables (production)
 

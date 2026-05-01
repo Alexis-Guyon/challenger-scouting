@@ -1,13 +1,13 @@
 """
 Create the initial admin user.
-Usage:
-    python seed_admin.py <username> <password> [role=admin] [org=default]
+Usage (from the `backend/` directory):
+    python scripts/seed_admin.py <username> <password> [role=admin] [org=default]
 """
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.auth import hash_password
 from app.db import Base, SessionLocal, engine

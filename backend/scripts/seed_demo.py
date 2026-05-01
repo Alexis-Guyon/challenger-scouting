@@ -1,16 +1,15 @@
 """
-Seed demo data so you can demo the app without a Riot API key.
-Generates realistic Challenger-like distributions per role.
+Seed synthetic Challenger-like data so the UI can be demoed without a Riot API key.
 
-Usage:
-    python seed_demo.py [num_players_per_role]
+Usage (from the `backend/` directory):
+    python scripts/seed_demo.py [num_players_per_role]
 """
 import random
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.db import Base, SessionLocal, engine
 from app.models import (

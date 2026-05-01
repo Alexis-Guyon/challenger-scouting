@@ -1,0 +1,34 @@
+# Vercel only deploys the frontend/ folder.
+# Everything else is irrelevant to a static-site build.
+
+backend/
+data/
+.git/
+.github/
+.claude/
+.vscode/
+.idea/
+.DS_Store
+__pycache__/
+*.pyc
+*.db
+*.sqlite*
+*.log
+
+# Build artifacts that don't exist yet but might
+node_modules/
+dist/
+build/
+
+# Docker / non-Vercel deploy
+Dockerfile
+.dockerignore
+docker-compose.yml
+fly.toml
+railway.json
+render.yaml
+Procfile
+
+# Docs not relevant in the deploy bundle
+DEPLOY.md
+README.md

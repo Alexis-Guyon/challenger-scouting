@@ -58,7 +58,7 @@ cp .env.example .env
 ### 3. Create the first admin user
 ```bash
 cd backend
-python seed_admin.py admin <password> admin <org-name>
+python scripts/seed_admin.py admin <password> admin <org-name>
 ```
 
 ### 4. Run the server
@@ -102,7 +102,10 @@ scouting/
 │   │       ├── ingestion.py
 │   │       ├── aggregation.py
 │   │       └── scoring.py       CSS engine, role weights
-│   ├── seed_admin.py            Create initial admin user
+│   ├── scripts/
+│   │   ├── migrate.py           Idempotent schema migrations (SQLite + Postgres)
+│   │   ├── seed_admin.py        Create / reset the initial admin user
+│   │   └── seed_demo.py         Generate synthetic Challenger data for UI demo
 │   ├── requirements.txt
 │   └── .env.example
 ├── frontend/

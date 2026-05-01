@@ -1,5 +1,12 @@
 /* Challenger Scouting — Pro edition (auth + watchlist + notes) */
 
+// API base URL — configurable so the same frontend can run:
+//   * bundled with the backend (FastAPI StaticFiles, same-origin) → empty
+//   * standalone on Vercel pointing at Fly/Railway → set via window.SCOUTING_API_BASE
+//     in a small inline <script> in index.html, OR via the build-time
+//     `vercel.json` rewrite so paths are still relative.
+const API_BASE = (typeof window !== 'undefined' && window.SCOUTING_API_BASE) || '';
+
 const TOKEN_KEY = 'cs_token';
 const USER_KEY = 'cs_user';
 
@@ -20,7 +27,8 @@ async function API(path, opts = {}) {
   const headers = opts.headers || {};
   const token = getToken();
   if (token) headers['Authorization'] = 'Bearer ' + token;
-  const res = await fetch(path, { ...opts, headers });
+  const url = path.startsWith('http') ? path : (API_BASE + path);
+  const res = await fetch(url, { ...opts, headers });
   if (res.status === 401) { showLogin(); throw new Error('unauthorized'); }
   if (!res.ok) {
     const txt = await res.text();
@@ -235,7 +243,7 @@ async function refreshWatchedSet() {
 
 async function toggleWatch(puuid, btn) {
   if (_watchedSet.has(puuid)) {
-    await fetch('/watchlist/' + puuid, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + getToken() } });
+    await fetch(API_BASE + '/watchlist/' + puuid, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + getToken() } });
     _watchedSet.delete(puuid);
     btn.classList.remove('active');
     btn.textContent = '☆';
@@ -386,7 +394,7 @@ async function loadWatchlist() {
   );
   document.querySelectorAll('.remove-wl').forEach(b =>
     b.addEventListener('click', async () => {
-      await fetch('/watchlist/' + b.dataset.puuid, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + getToken() } });
+      await fetch(API_BASE + '/watchlist/' + b.dataset.puuid, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + getToken() } });
       loadWatchlist();
     })
   );
@@ -793,7 +801,7 @@ async function loadNotes(puuid) {
   `).join('');
   list.querySelectorAll('.delete').forEach(d =>
     d.addEventListener('click', async () => {
-      await fetch('/notes/' + d.dataset.id, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + getToken() } });
+      await fetch(API_BASE + '/notes/' + d.dataset.id, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + getToken() } });
       loadNotes(puuid);
     })
   );

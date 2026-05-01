@@ -6,6 +6,19 @@
 <title>Challenger Scouting — Pro Edition</title>
 <link rel="stylesheet" href="style.css"/>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>
+  // API base URL — set when the frontend is hosted standalone (e.g. Vercel).
+  // Empty value = same-origin (when bundled with the FastAPI backend).
+  // Auto-detect Vercel deployment by hostname → use the Fly backend.
+  (function() {
+    var h = location.hostname;
+    if (h.endsWith(".vercel.app") || h === "challenger-scouting.example.com") {
+      window.SCOUTING_API_BASE = "https://challenger-scouting.fly.dev";
+    } else {
+      window.SCOUTING_API_BASE = window.SCOUTING_API_BASE || "";
+    }
+  })();
+</script>
 </head>
 <body>
 

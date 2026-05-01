@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Challenger Scouting — Pro Edition</title>
+<link rel="stylesheet" href="style.css"/>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<div id="login-screen" class="login-overlay" style="display:none">
+  <form id="login-form" class="login-card">
+    <div class="brand" style="margin-bottom:18px;">
+      <span class="logo">CS</span>
+      <div>
+        <h1 style="margin:0;">Challenger Scouting</h1>
+        <p class="sub" style="margin:0;">Pro edition — internal use</p>
+      </div>
+    </div>
+    <label>Username
+      <input id="lg-user" type="text" autocomplete="username" required/>
+    </label>
+    <label>Password
+      <input id="lg-pass" type="password" autocomplete="current-password" required/>
+    </label>
+    <div id="login-err" class="login-err"></div>
+    <button type="submit">Sign in</button>
+  </form>
+</div>
+
+<div id="app-shell" style="display:none">
+  <header>
+    <div class="brand">
+      <span class="logo">CS</span>
+      <div>
+        <h1>Challenger Scouting</h1>
+        <p class="sub">SoloQ analytics · EUW</p>
+      </div>
+    </div>
+    <nav>
+      <a href="#" data-view="leaderboard" class="active">Ladder</a>
+      <a href="#" data-view="watchlist">Watchlist</a>
+      <a href="#" data-view="player">Player</a>
+      <a href="#" data-view="compare">Compare</a>
+      <a href="#" data-view="admin">Admin</a>
+    </nav>
+    <div class="user-menu">
+      <span id="user-label" class="muted"></span>
+      <button id="logout-btn" class="secondary">Logout</button>
+    </div>
+  </header>
+  <main id="app"></main>
+</div>
+
+<template id="tpl-leaderboard">
+  <section class="view">
+    <div class="filters">
+      <label>Role
+        <select id="f-role">
+          <option value="">All</option>
+          <option value="TOP">TOP</option>
+          <option value="JGL">JGL</option>
+          <option value="MID">MID</option>
+          <option value="ADC">ADC</option>
+          <option value="SUP">SUP</option>
+        </select>
+      </label>
+      <label>Patch
+        <input id="f-patch" type="text" placeholder="e.g. 16.9"/>
+      </label>
+      <label>Min games
+        <input id="f-min" type="number" value="5" min="1"/>
+      </label>
+      <label>Sort
+        <select id="f-sort">
+          <option value="css">CSS Score</option>
+          <option value="lp">LP</option>
+          <option value="winrate">Winrate</option>
+          <option value="games">Games</option>
+          <option value="age">Age (asc)</option>
+        </select>
+      </label>
+      <label>Pro status
+        <select id="f-prostatus">
+          <option value="">All</option>
+          <option value="pro">Pros only</option>
+          <option value="fa">Free agents</option>
+          <option value="amateur">Amateurs only</option>
+        </select>
+      </label>
+      <label>Max age
+        <input id="f-maxage" type="number" placeholder="e.g. 21" min="14" max="40"/>
+      </label>
+      <label>Residency
+        <select id="f-residency">
+          <option value="">Any</option>
+          <option value="Europe">Europe</option>
+          <option value="Korea">Korea</option>
+          <option value="North America">North America</option>
+        </select>
+      </label>
+      <label>Contract ends within
+        <select id="f-contract">
+          <option value="">—</option>
+          <option value="30">30 days</option>
+          <option value="90">90 days</option>
+          <option value="180">180 days</option>
+          <option value="365">1 year</option>
+        </select>
+      </label>
+      <button id="f-apply">Apply</button>
+    </div>
+    <div class="table-wrap">
+      <table id="lb-table">
+        <thead>
+          <tr>
+            <th>#</th><th>Summoner</th><th>Pro</th><th>Team</th><th>Age</th><th>Tier</th><th>LP</th>
+            <th>Role</th><th>Patch</th>
+            <th>Games</th><th>WR</th><th>Pool</th>
+            <th>CSS</th><th>%ile</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</template>
+
+<template id="tpl-watchlist">
+  <section class="view">
+    <div class="card">
+      <h3>Your watchlist</h3>
+      <p class="muted" style="margin-top:0;">Players you've tagged for follow-up.</p>
+      <div class="table-wrap">
+        <table id="wl-table">
+          <thead>
+            <tr>
+              <th>Summoner</th><th>Tier</th><th>LP</th><th>Role</th>
+              <th>Games</th><th>CSS</th><th>%ile</th><th>Tag</th><th>Added</th><th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</template>
+
+<template id="tpl-player">
+  <section class="view">
+    <div class="filters">
+      <label>Search summoner (gameName#tag)
+        <input id="p-search" type="text" placeholder="name…"/>
+      </label>
+      <div id="p-suggest" class="suggest"></div>
+    </div>
+    <div id="p-content"></div>
+  </section>
+</template>
+
+<template id="tpl-compare">
+  <section class="view">
+    <div class="filters">
+      <label>Players (comma-separated puuids)
+        <input id="cmp-input" type="text" placeholder="puuid1,puuid2,puuid3"/>
+      </label>
+      <label>Role
+        <select id="cmp-role">
+          <option value="">Any</option>
+          <option value="TOP">TOP</option>
+          <option value="JGL">JGL</option>
+          <option value="MID">MID</option>
+          <option value="ADC">ADC</option>
+          <option value="SUP">SUP</option>
+        </select>
+      </label>
+      <button id="cmp-go">Compare</button>
+    </div>
+    <div id="cmp-result"></div>
+  </section>
+</template>
+
+<template id="tpl-admin">
+  <section class="view">
+    <div class="card">
+      <h3>Pipeline control</h3>
+      <p class="muted">Pulls Challenger players → matches → timelines → metrics → CSS scores.</p>
+      <div class="row">
+        <label>Players
+          <input id="a-players" type="number" value="20" min="1" max="300"/>
+        </label>
+        <label>Matches per player
+          <input id="a-matches" type="number" value="20" min="1" max="100"/>
+        </label>
+        <button id="a-ingest">Run ingestion</button>
+        <button id="a-recompute" class="secondary">Recompute scores only</button>
+        <button id="a-leaguepedia" class="secondary">Sync Leaguepedia (EU pros)</button>
+        <button id="a-tournaments" class="secondary">Sync tournaments (LEC + ERLs)</button>
+      </div>
+      <pre id="a-log" class="log"></pre>
+    </div>
+    <div class="card">
+      <h3>System stats</h3>
+      <pre id="a-stats" class="log"></pre>
+    </div>
+  </section>
+</template>
+
+<script src="app.js"></script>
+</body>
+</html>

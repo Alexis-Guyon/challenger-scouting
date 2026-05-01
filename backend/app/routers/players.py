@@ -1,0 +1,255 @@
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import desc
+from sqlalchemy.orm import Session
+
+from ..auth import get_current_user
+from ..config import settings
+from ..db import get_db
+from ..models import (
+    ChampionPool,
+    MatchParticipant,
+    Player,
+    PlayerAggregate,
+    PlayerMeta,
+    RankSnapshot,
+    User,
+    WatchlistEntry,
+)
+from ..services.scoring import compute_css_for_aggregate
+
+router = APIRouter(prefix="/players", tags=["players"], dependencies=[Depends(get_current_user)])
+
+
+def _serialize_player(p: Player, db: Session) -> dict:
+    latest_rank = (
+        db.query(RankSnapshot)
+        .filter_by(puuid=p.puuid)
+        .order_by(desc(RankSnapshot.snapshot_date))
+        .first()
+    )
+    meta = db.get(PlayerMeta, p.puuid)
+    meta_payload = None
+    if meta and meta.is_pro:
+        meta_payload = {
+            "leaguepedia_id": meta.leaguepedia_id,
+            "leaguepedia_url": meta.leaguepedia_url,
+            "country": meta.country,
+            "nationality_primary": meta.nationality_primary,
+            "residency": meta.residency,
+            "age": meta.age,
+            "lp_role": meta.role,
+            "current_team": meta.current_team,
+            "is_fa": (meta.current_team or "") == "" and not meta.is_retired,
+            "is_retired": meta.is_retired,
+            "contract_end": meta.contract_end,
+        }
+    return {
+        "puuid": p.puuid,
+        "summoner_name": p.summoner_name,
+        "region": p.region,
+        "main_role": p.main_role,
+        "account_level": p.account_level,
+        "smurf_flag": p.smurf_flag,
+        "tier": latest_rank.tier if latest_rank else None,
+        "lp": latest_rank.lp if latest_rank else None,
+        "wins": latest_rank.wins if latest_rank else None,
+        "losses": latest_rank.losses if latest_rank else None,
+        "meta": meta_payload,
+    }
+
+
+@router.get("/search")
+def search_players(name: str = Query(...), db: Session = Depends(get_db)):
+    rows = (
+        db.query(Player)
+        .filter(Player.summoner_name.ilike(f"%{name}%"))
+        .limit(20)
+        .all()
+    )
+    return [_serialize_player(p, db) for p in rows]
+
+
+@router.get("/{puuid}")
+def get_player(
+    puuid: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    p = db.get(Player, puuid)
+    if not p:
+        raise HTTPException(status_code=404, detail="player not found")
+
+    aggs = db.query(PlayerAggregate).filter_by(puuid=puuid).all()
+    agg_payload = []
+    for a in aggs:
+        _, _, breakdown = compute_css_for_aggregate(db, a)
+        agg_payload.append({
+            "patch": a.patch,
+            "role": a.role,
+            "games_played": a.games_played,
+            "wins": a.wins,
+            "winrate": round((a.wins / a.games_played * 100) if a.games_played else 0, 1),
+            "css_score": round(a.css_score, 1),
+            "percentile_rank": a.percentile_rank,
+            "stats": {
+                "gd15": round(a.avg_gd15, 1),
+                "xpd15": round(a.avg_xpd15, 1),
+                "csd15": round(a.avg_csd15, 1),
+                "cspm": round(a.avg_cspm, 2),
+                "dmg_share": round(a.avg_dmg_share, 3),
+                "dpm": round(a.avg_dpm, 1),
+                "kp": round(a.avg_kp, 3),
+                "kda": round(a.avg_kda, 2),
+                "vspm": round(a.avg_vspm, 2),
+                "wpm": round(a.avg_wpm, 2),
+                "wcpm": round(a.avg_wcpm, 2),
+                "solo_kills": round(a.avg_solo_kills, 2),
+                "objective_dmg": round(a.avg_objective_dmg, 1),
+                "early_deaths": round(a.avg_early_deaths, 2),
+                "deaths": round(a.avg_deaths, 2),
+                "champion_pool_size": a.champion_pool_size,
+                "std_gd15": round(a.std_gd15, 1),
+            },
+            "breakdown": breakdown,
+        })
+
+    pool = (
+        db.query(ChampionPool)
+        .filter_by(puuid=puuid)
+        .order_by(desc(ChampionPool.games))
+        .limit(20)
+        .all()
+    )
+    pool_payload = [
+        {
+            "champion_id": cp.champion_id,
+            "champion_name": cp.champion_name,
+            "patch": cp.patch,
+            "games": cp.games,
+            "wins": cp.wins,
+            "winrate": round((cp.wins / cp.games * 100) if cp.games else 0, 1),
+            "avg_kda": round(cp.avg_kda, 2),
+            "avg_dmg_share": round(cp.avg_dmg_share, 3),
+        }
+        for cp in pool
+    ]
+
+    recent = (
+        db.query(MatchParticipant)
+        .filter_by(puuid=puuid)
+        .order_by(desc(MatchParticipant.id))
+        .limit(20)
+        .all()
+    )
+    recent_payload = [
+        {
+            "match_id": r.match_id,
+            "champion_name": r.champion_name,
+            "role": r.role,
+            "win": r.win,
+            "kills": r.kills, "deaths": r.deaths, "assists": r.assists,
+            "kda": round(r.kda, 2),
+            "cs": r.cs_total,
+            "gd15": r.gd_at_15, "xpd15": r.xpd_at_15, "csd15": r.csd_at_15,
+            "dmg_share": round(r.damage_share, 3),
+            "vision_score": r.vision_score,
+        }
+        for r in recent
+    ]
+
+    is_watched = (
+        db.query(WatchlistEntry)
+        .filter_by(user_id=user.id, puuid=puuid)
+        .first() is not None
+    )
+
+    return {
+        "player": _serialize_player(p, db),
+        "aggregates": agg_payload,
+        "champion_pool": pool_payload,
+        "recent_matches": recent_payload,
+        "is_watched": is_watched,
+    }
+
+
+@router.get("")
+def list_players(
+    role: str | None = None,
+    patch: str | None = None,
+    min_games: int = Query(default=None),
+    sort: str = "css",
+    limit: int = 100,
+    # --- Advanced scouting filters (PlayerMeta) ---
+    fa: bool | None = Query(default=None, description="Free agents only (no current team)"),
+    contract_within_days: int | None = Query(default=None, description="Contract ending within N days"),
+    max_age: int | None = Query(default=None, description="Cap player age (e.g. 21 for U21)"),
+    min_age: int | None = Query(default=None),
+    residency: str | None = Query(default=None, description='e.g. "Europe", "Korea"'),
+    country: str | None = Query(default=None, description='e.g. "France"'),
+    pro_only: bool = Query(default=False),
+    db: Session = Depends(get_db),
+):
+    """Scout leaderboard. Default sort = CSS desc."""
+    from datetime import date, timedelta
+
+    min_games = min_games if min_games is not None else settings.min_games
+
+    q = (
+        db.query(PlayerAggregate, Player)
+        .join(Player, PlayerAggregate.puuid == Player.puuid)
+        .outerjoin(PlayerMeta, PlayerMeta.puuid == Player.puuid)
+    )
+    if role:
+        q = q.filter(PlayerAggregate.role == role.upper())
+    if patch:
+        q = q.filter(PlayerAggregate.patch == patch)
+    q = q.filter(PlayerAggregate.games_played >= min_games)
+
+    if pro_only:
+        q = q.filter(PlayerMeta.is_pro == True)  # noqa: E712
+    if fa is True:
+        q = q.filter(PlayerMeta.is_pro == True, (PlayerMeta.current_team == "") | (PlayerMeta.current_team.is_(None)), PlayerMeta.is_retired == False)  # noqa: E712
+    if contract_within_days is not None:
+        cutoff = (date.today() + timedelta(days=contract_within_days)).isoformat()
+        q = q.filter(PlayerMeta.contract_end.isnot(None), PlayerMeta.contract_end != "", PlayerMeta.contract_end <= cutoff)
+    if max_age is not None:
+        q = q.filter(PlayerMeta.age.isnot(None), PlayerMeta.age <= max_age)
+    if min_age is not None:
+        q = q.filter(PlayerMeta.age.isnot(None), PlayerMeta.age >= min_age)
+    if residency:
+        q = q.filter(PlayerMeta.residency == residency)
+    if country:
+        q = q.filter(PlayerMeta.country == country)
+
+    if sort == "css":
+        q = q.order_by(desc(PlayerAggregate.css_score))
+    elif sort == "winrate":
+        q = q.order_by(desc(PlayerAggregate.wins * 1.0 / PlayerAggregate.games_played))
+    elif sort == "games":
+        q = q.order_by(desc(PlayerAggregate.games_played))
+    elif sort == "lp":
+        q = q.outerjoin(RankSnapshot, RankSnapshot.puuid == Player.puuid).order_by(desc(RankSnapshot.lp))
+    elif sort == "age":
+        q = q.order_by(PlayerMeta.age.asc().nullslast())
+    else:
+        q = q.order_by(desc(PlayerAggregate.css_score))
+
+    rows = q.limit(limit).all()
+    seen = set()
+    out = []
+    for a, p in rows:
+        if p.puuid in seen:
+            continue
+        seen.add(p.puuid)
+        out.append({
+            **_serialize_player(p, db),
+            "patch": a.patch,
+            "role": a.role,
+            "games_played": a.games_played,
+            "wins": a.wins,
+            "winrate": round((a.wins / a.games_played * 100) if a.games_played else 0, 1),
+            "css_score": round(a.css_score, 1),
+            "percentile_rank": a.percentile_rank,
+            "champion_pool_size": a.champion_pool_size,
+        })
+    return out

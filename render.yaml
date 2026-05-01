@@ -1,0 +1,36 @@
+# Render.com blueprint
+# Push this to GitHub, then "New Blueprint" on render.com and point at the repo.
+# Render will auto-create the service + Postgres + secrets prompt.
+
+services:
+  - type: web
+    name: challenger-scouting
+    runtime: docker
+    region: frankfurt   # closest to EUW
+    plan: starter       # free tier sleeps after inactivity
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: scouting-db
+          property: connectionString
+      - key: RIOT_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: PLATFORM
+        value: euw1
+      - key: REGION
+        value: europe
+      - key: LP_USERNAME
+        sync: false
+      - key: LP_PASSWORD
+        sync: false
+
+databases:
+  - name: scouting-db
+    plan: free
+    databaseName: scouting
+    user: scouting
+    region: frankfurt

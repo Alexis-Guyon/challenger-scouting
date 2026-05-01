@@ -338,7 +338,8 @@ def fetch_active_pros(residencies: Iterable[str] = ("Europe",)) -> list[dict]:
     return out
 
 
-def fetch_pros_by_name(names: Iterable[str], chunk_size: int = 5) -> list[dict]:
+def fetch_pros_by_name(names: Iterable[str], chunk_size: int = 1,
+                        per_query_pace_sec: float = 3.0) -> list[dict]:
     """
     Targeted fetch from Cargo Players table.
 
@@ -354,8 +355,14 @@ def fetch_pros_by_name(names: Iterable[str], chunk_size: int = 5) -> list[dict]:
     seen_players: set[str] = set()
 
     def fetch_chunk(chunk: list[str]) -> list[dict]:
-        in_clause = ",".join(_quote_for_cargo(n) for n in chunk)
-        where = f"Player IN ({in_clause})"
+        # Single-name fast path: `Player="X"` is way more stable than IN clauses
+        # (Fandom's IN-clause SQL handler throws MWException on edge cases —
+        # apostrophes, accented characters, very long names, etc.).
+        if len(chunk) == 1:
+            where = f"Player={_quote_for_cargo(chunk[0])}"
+        else:
+            in_clause = ",".join(_quote_for_cargo(n) for n in chunk)
+            where = f"Player IN ({in_clause})"
 
         try:
             return _cargo_query(
@@ -387,25 +394,25 @@ def fetch_pros_by_name(names: Iterable[str], chunk_size: int = 5) -> list[dict]:
 
             return fetch_chunk(chunk[:mid]) + fetch_chunk(chunk[mid:])
 
+    n_processed = 0
     for i in range(0, len(names), chunk_size):
         chunk = names[i : i + chunk_size]
-
         rows = fetch_chunk(chunk)
-
         for r in rows:
             key = r.get("Player")
             if key and key not in seen_players:
                 seen_players.add(key)
                 out.append(r)
-
-        # 6 s pacing — Fandom's bot-password Cargo quota is roughly 1 query
-        # per 6-10 s for newish accounts. Going faster trips MWException.
-        time.sleep(6.0)
+        n_processed += len(chunk)
+        if n_processed % 20 == 0:
+            logger.info("Leaguepedia: %d/%d processed (%d matched so far)",
+                        n_processed, len(names), len(out))
+        time.sleep(per_query_pace_sec)
 
     logger.info(
-        "Leaguepedia: fetched %d profiles targeted from %d names",
-        len(out),
-        len(names),
+        "Leaguepedia: fetched %d profiles targeted from %d names "
+        "(chunk_size=%d, pace=%.1fs)",
+        len(out), len(names), chunk_size, per_query_pace_sec,
     )
 
     return out

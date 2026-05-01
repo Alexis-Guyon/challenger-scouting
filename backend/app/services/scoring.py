@@ -126,10 +126,19 @@ def compute_css_for_aggregate(db: Session, agg: PlayerAggregate) -> tuple[float,
         champpool = 85.0
     category_scores["champpool"] = champpool
 
-    # consistency: lower std_gd15 vs role distribution → higher score
-    sd_gd15 = dists.get("gd15", (0, 1))[1] or 1
-    consistency_ratio = (agg.std_gd15 or sd_gd15) / sd_gd15
-    consistency = max(0.0, min(100.0, 100 - 50 * (consistency_ratio - 1)))
+    # consistency: low intra-player variance in GD@15 → high score.
+    # We compare to the MEDIAN intra-player std_gd15 of the role+patch cohort.
+    # The previous formula divided by the std of player MEANS (very different
+    # quantity, ~5x smaller), pinning everyone to 0. Now: ratio < 1 = more
+    # consistent than the median Challenger; ratio > 1 = noisier.
+    median_std = _median_within_player_std(db, agg.role, agg.patch)
+    if not median_std:
+        median_std = 1000  # safe fallback when cohort is too small
+    player_std = agg.std_gd15 if agg.std_gd15 is not None else median_std
+    consistency_ratio = player_std / median_std
+    # 30 pts per unit deviation, anchored at 1.0 = 80
+    # ratio 0.5 → 100, ratio 1.0 → 80, ratio 1.5 → 65, ratio 2.0 → 50, ratio 3.0 → 20
+    consistency = max(0.0, min(100.0, 80 - 30 * (consistency_ratio - 1)))
     category_scores["consistency"] = consistency
 
     # Weighted CSS
@@ -343,6 +352,39 @@ def compute_smurf_score(db: Session, player: Player) -> tuple[float, dict]:
     return min(1.0, sum(signals.values())), signals
 
 
+_MEDIAN_STD_CACHE: dict[tuple, float] = {}
+
+
+def _median_within_player_std(db: Session, role: str, patch: str) -> float:
+    """
+    Median intra-player std_gd15 across all PlayerAggregates of the same
+    role+patch with games_played > 5. Cached per request — recomputing this
+    inside compute_css_for_aggregate for every player would be O(N²).
+
+    The cache is invalidated when score_all() starts a new pass.
+    """
+    key = (role, patch)
+    if key in _MEDIAN_STD_CACHE:
+        return _MEDIAN_STD_CACHE[key]
+    rows = (
+        db.query(PlayerAggregate.std_gd15)
+        .filter(
+            PlayerAggregate.role == role,
+            PlayerAggregate.patch == patch,
+            PlayerAggregate.games_played > 5,
+            PlayerAggregate.std_gd15.isnot(None),
+            PlayerAggregate.std_gd15 > 0,
+        )
+        .all()
+    )
+    values = sorted(r[0] for r in rows if r[0] and r[0] > 0)
+    if not values:
+        return 0.0
+    median = values[len(values) // 2]
+    _MEDIAN_STD_CACHE[key] = median
+    return median
+
+
 def _lobby_factor_for(db: Session, agg: PlayerAggregate) -> float:
     """
     Compute mean avg_lobby_lp over the matches that contributed to this aggregate.
@@ -366,6 +408,8 @@ def _lobby_factor_for(db: Session, agg: PlayerAggregate) -> float:
 
 def score_all(db: Session, min_games: int) -> int:
     """Compute CSS for every PlayerAggregate with enough games. Returns count."""
+    # Reset the per-pass median cache so consistency benchmarks are fresh
+    _MEDIAN_STD_CACHE.clear()
     aggs = db.query(PlayerAggregate).filter(PlayerAggregate.games_played >= min_games).all()
 
     # Group by (patch, role) for percentile rank

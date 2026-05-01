@@ -34,6 +34,9 @@ NEW_COLUMNS = [
     # Team identity (logo for badge rendering)
     ("player_meta", "current_team_tag", "VARCHAR"),
     ("player_meta", "current_team_logo_url", "VARCHAR"),
+    # Lolpros full profile cache (social media, previous teams, peak/seasons)
+    ("player_meta", "lolpros_slug", "VARCHAR"),
+    ("player_meta", "lolpros_profile_json", "TEXT"),
 ]
 
 

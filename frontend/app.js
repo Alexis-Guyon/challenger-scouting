@@ -340,6 +340,75 @@ function initPlayer() {
 
 const RADAR_AXES = ['lane', 'damage', 'vision', 'objective', 'mapplay', 'survival', 'champpool', 'consistency'];
 
+const SOCIAL_ICONS = {
+  twitter:    { label: 'Twitter / X', url: u => `https://x.com/${u}` },
+  twitch:     { label: 'Twitch',      url: u => `https://twitch.tv/${u}` },
+  discord:    { label: 'Discord',     url: u => null },  // discord is just a tag, no link
+  instagram:  { label: 'Instagram',   url: u => `https://instagram.com/${u}` },
+  facebook:   { label: 'Facebook',    url: u => `https://facebook.com/${u}` },
+  leaguepedia:{ label: 'Leaguepedia', url: u => `https://lol.fandom.com/wiki/${u.replace(/ /g,'_')}` },
+  gamesoflegends: { label: 'GoL',     url: u => `https://gol.gg/players/player-stats/${u}/` },
+  sheep:      { label: 'Sheep',       url: u => null },
+};
+
+function renderProIdentity(meta) {
+  const social = meta.social_media || {};
+  const links = Object.entries(social)
+    .filter(([_, v]) => v)
+    .map(([k, v]) => {
+      const cfg = SOCIAL_ICONS[k] || { label: k, url: () => null };
+      const url = cfg.url ? cfg.url(v) : null;
+      const inner = `<span class="social-icon">${cfg.label[0]}</span> ${cfg.label}: <strong>${v}</strong>`;
+      return url
+        ? `<a href="${url}" target="_blank" rel="noopener" class="social-link">${inner}</a>`
+        : `<span class="social-link">${inner}</span>`;
+    });
+
+  const prev = (meta.previous_teams || []).slice(0, 8);
+  const peak = meta.peak_rank;
+  const peakStr = peak
+    ? `${(peak.tier||'').replace(/^\d+_/, '').toUpperCase()} ${peak.division || ''} · ${peak.league_points ?? 0} LP (${peak.wins}W/${peak.losses}L)`
+    : null;
+
+  return `
+    <div class="card">
+      <h3>Pro identity</h3>
+      <div class="grid-3" style="gap:18px;">
+        <div>
+          <h4 class="muted-h4">Career path</h4>
+          ${prev.length === 0 ? '<p class="muted">No prior teams on record.</p>' : `
+          <div class="team-history">
+            ${prev.map(pt => `
+              <div class="team-history-row">
+                ${pt.logo_url ? `<img class="team-logo" src="${pt.logo_url}" alt="${pt.tag||''}" onerror="this.style.display='none'"/>` : ''}
+                <div class="team-history-info">
+                  <strong>${pt.name||'?'}</strong>
+                  <div class="muted">${pt.join_date ? pt.join_date.slice(0,7) : '?'} → ${pt.leave_date ? pt.leave_date.slice(0,7) : 'present'}</div>
+                </div>
+              </div>
+            `).join('')}
+          </div>`}
+        </div>
+        <div>
+          <h4 class="muted-h4">Social media</h4>
+          ${links.length === 0 ? '<p class="muted">No public social links on Lolpros.</p>' : `<div class="social-list">${links.join('')}</div>`}
+          ${meta.lolpros_url ? `<p style="margin-top:12px;"><a href="${meta.lolpros_url}" target="_blank" rel="noopener" style="color:var(--accent);font-size:12px;">View full profile on Lolpros ↗</a></p>` : ''}
+        </div>
+        <div>
+          <h4 class="muted-h4">Career rank highlights</h4>
+          ${peakStr ? `
+          <div class="stat-row"><span class="label">Peak rank</span><span class="value">${peakStr}</span></div>` : ''}
+          ${meta.country ? `<div class="stat-row"><span class="label">Country</span><span class="value">${meta.country}</span></div>` : ''}
+          ${(meta.other_countries || []).length ? `<div class="stat-row"><span class="label">Eligibility</span><span class="value">${meta.other_countries.join(', ')}</span></div>` : ''}
+          ${meta.age ? `<div class="stat-row"><span class="label">Age</span><span class="value">${meta.age}</span></div>` : ''}
+          ${meta.contract_end ? `<div class="stat-row"><span class="label">Contract ends</span><span class="value">${meta.contract_end}</span></div>` : ''}
+          ${meta.lp_role ? `<div class="stat-row"><span class="label">Role (LP)</span><span class="value">${meta.lp_role}</span></div>` : ''}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 async function loadPlayer(puuid) {
   const data = await API('/players/' + puuid);
   const c = document.getElementById('p-content');
@@ -407,6 +476,8 @@ async function loadPlayer(puuid) {
         <div class="stat-row"><span class="label">Champion pool (≥3 games)</span><span class="value">${stats.champion_pool_size}</span></div>
       </div>
     </div>
+
+    ${meta && meta.is_pro ? renderProIdentity(meta) : ''}
 
     <div class="grid-2">
       <div class="card">

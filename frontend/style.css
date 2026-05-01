@@ -210,4 +210,26 @@ td.css { font-weight: 700; }
   vertical-align: middle;
   flex-shrink: 0;
 }
+
+/* Pro identity card */
+.muted-h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+.team-history { display: flex; flex-direction: column; gap: 8px; }
+.team-history-row { display: flex; align-items: center; gap: 10px; font-size: 13px; padding: 6px 8px; background: var(--bg-2); border-radius: 6px; }
+.team-history-row .team-logo { width: 24px; height: 24px; }
+.team-history-info strong { display: block; }
+.team-history-info .muted { font-size: 11px; }
+.social-list { display: flex; flex-direction: column; gap: 6px; }
+.social-link {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--bg-2); padding: 7px 10px; border-radius: 6px;
+  font-size: 12px; text-decoration: none; color: var(--text);
+  transition: background 0.12s;
+}
+.social-link:hover { background: rgba(109,140,255,0.15); }
+.social-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 4px;
+  background: var(--accent); color: var(--bg); font-weight: 800; font-size: 11px;
+  flex-shrink: 0;
+}
 .no-data { font-style: italic; color: var(--muted); font-size: 11px; }

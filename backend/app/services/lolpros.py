@@ -136,6 +136,24 @@ def fetch_team_rosters(slugs: Iterable[str]) -> dict[str, list[dict]]:
     return out
 
 
+def fetch_profile(slug: str) -> dict | None:
+    """Pull the full /es/profiles/<slug> document — includes social_media + previous_teams + peak + seasons."""
+    if not slug:
+        return None
+    try:
+        with httpx.Client(timeout=20.0, headers={"User-Agent": USER_AGENT}) as client:
+            r = client.get(f"{API_BASE}/es/profiles/{slug}")
+            if r.status_code == 429:
+                time.sleep(5)
+                r = client.get(f"{API_BASE}/es/profiles/{slug}")
+            if r.status_code != 200:
+                return None
+            return r.json()
+    except Exception as exc:
+        logger.warning("lolpros profile %s: %s", slug, exc)
+        return None
+
+
 def build_lookup(entries: list[dict]) -> dict[str, dict]:
     """
     Map normalized_name -> ladder entry. The summoner_name field is the Riot ID
@@ -155,10 +173,15 @@ def build_lookup(entries: list[dict]) -> dict[str, dict]:
     return lookup
 
 
-def sync_with_lookup(db: Session, lookup: dict[str, dict]) -> dict:
-    """For each player in DB, try to match against Lolpros lookup, upsert PlayerMeta."""
+def sync_with_lookup(db: Session, lookup: dict[str, dict], fetch_profiles: bool = True) -> dict:
+    """For each player in DB, try to match against Lolpros lookup, upsert PlayerMeta.
+
+    When `fetch_profiles=True`, also pull /es/profiles/<slug> for matched players
+    to cache social media, previous teams, peak rank, and seasons history.
+    """
+    import json as _json
     now = datetime.now(timezone.utc)
-    matched, unmatched = 0, 0
+    matched, unmatched, profiles_fetched = 0, 0, 0
 
     for p in db.query(Player).all():
         rec = None
@@ -180,28 +203,33 @@ def sync_with_lookup(db: Session, lookup: dict[str, dict]) -> dict:
             logo_url = ((team.get("logo") or {}).get("url") or "").strip()
             position = rec.get("position") or ""
             role = POSITION_TO_ROLE.get(position)
+            slug = rec.get("slug")
 
             meta.country = rec.get("country") or meta.country
             meta.residency = "Europe" if (rec.get("account") or {}).get("server") == "EUW" else meta.residency
             meta.role = role or meta.role
-            # Store the canonical team name only — UI composes "[logo] Name" itself.
             meta.current_team = current_team_name
             meta.current_team_tag = tag or None
             meta.current_team_logo_url = logo_url or None
             meta.is_pro = True
             meta.is_retired = False
-            # Lolpros doesn't expose contract end / birthdate publicly; keep
-            # whatever Leaguepedia might have stored.
+            meta.lolpros_slug = slug
             meta.leaguepedia_id = meta.leaguepedia_id or rec.get("name")
-            meta.leaguepedia_url = meta.leaguepedia_url or f"https://lolpros.gg/player/{rec.get('slug')}"
+            meta.leaguepedia_url = meta.leaguepedia_url or f"https://lolpros.gg/player/{slug}"
+
+            # Pull full profile (social + prev teams + peak) once per sync
+            if fetch_profiles and slug:
+                profile = fetch_profile(slug)
+                if profile:
+                    meta.lolpros_profile_json = _json.dumps(profile)
+                    profiles_fetched += 1
+                    time.sleep(REQUEST_DELAY_SEC)
         else:
             unmatched += 1
-            # Don't downgrade is_pro to False — Leaguepedia might have caught
-            # them earlier even if Lolpros doesn't track them yet.
         meta.last_synced = now
 
     db.commit()
-    return {"matched": matched, "unmatched": unmatched}
+    return {"matched": matched, "unmatched": unmatched, "profiles_fetched": profiles_fetched}
 
 
 def run_lolpros_sync_sync(db: Session, server: str = "EUW") -> dict:

@@ -30,9 +30,18 @@ def _serialize_player(p: Player, db: Session) -> dict:
     meta = db.get(PlayerMeta, p.puuid)
     meta_payload = None
     if meta and meta.is_pro:
+        import json as _json
+        profile = None
+        if meta.lolpros_profile_json:
+            try:
+                profile = _json.loads(meta.lolpros_profile_json)
+            except Exception:
+                profile = None
         meta_payload = {
             "leaguepedia_id": meta.leaguepedia_id,
             "leaguepedia_url": meta.leaguepedia_url,
+            "lolpros_slug": meta.lolpros_slug,
+            "lolpros_url": f"https://lolpros.gg/player/{meta.lolpros_slug}" if meta.lolpros_slug else None,
             "country": meta.country,
             "nationality_primary": meta.nationality_primary,
             "residency": meta.residency,
@@ -44,6 +53,21 @@ def _serialize_player(p: Player, db: Session) -> dict:
             "is_fa": (meta.current_team or "") == "" and not meta.is_retired,
             "is_retired": meta.is_retired,
             "contract_end": meta.contract_end,
+            # Profile sub-payload — only the bits the UI actually needs
+            "social_media": (profile or {}).get("social_media"),
+            "previous_teams": [
+                {
+                    "name": pt.get("name"),
+                    "tag": pt.get("tag"),
+                    "slug": pt.get("slug"),
+                    "logo_url": (pt.get("logo") or {}).get("url"),
+                    "join_date": pt.get("join_date"),
+                    "leave_date": pt.get("leave_date"),
+                }
+                for pt in (profile or {}).get("previous_teams", []) or []
+            ],
+            "other_countries": (profile or {}).get("other_countries", []),
+            "peak_rank": ((profile or {}).get("league_player") or {}).get("peak"),
         }
     import json as _json
     smurf_signals = None

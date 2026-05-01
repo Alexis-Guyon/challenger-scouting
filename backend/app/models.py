@@ -282,6 +282,8 @@ class PlayerMeta(Base):
     contract_end = Column(String)                      # ISO date if known (rarely populated)
     is_pro = Column(Boolean, default=False)            # has a LP entry at all
     lolesports_id = Column(String, index=True)         # cross-ref to OfficialMatchParticipant.pro_player_id
+    lolpros_slug = Column(String, index=True)          # https://lolpros.gg/player/<slug>
+    lolpros_profile_json = Column(Text)                # cached /es/profiles/<slug> body (social, prev teams, peak, seasons)
     last_synced = Column(DateTime)
 
 

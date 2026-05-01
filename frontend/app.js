@@ -166,7 +166,7 @@ async function loadLeaderboard() {
   if (patch) params.set('patch', patch);
   params.set('min_games', min);
   params.set('sort', sort);
-  params.set('limit', 200);
+  params.set('limit', 500);
   if (proStatus === 'pro') params.set('pro_only', 'true');
   if (proStatus === 'fa') params.set('fa', 'true');
   // amateur = pro_only=false handled client-side below
@@ -182,6 +182,18 @@ async function loadLeaderboard() {
 
   const tbody = document.querySelector('#lb-table tbody');
   tbody.innerHTML = '';
+
+  // Update / inject a "showing N players" counter under the filters bar
+  let counter = document.getElementById('lb-counter');
+  if (!counter) {
+    counter = document.createElement('p');
+    counter.id = 'lb-counter';
+    counter.className = 'muted';
+    counter.style.cssText = 'margin:0 0 10px;font-size:12px;';
+    document.querySelector('.filters').after(counter);
+  }
+  counter.textContent = `Showing ${data.length} player${data.length>1?'s':''} (capped at 500). Tweak Min games / role / patch to widen or narrow.`;
+
   if (!data.length) {
     tbody.innerHTML = `<tr><td colspan="15" class="muted" style="text-align:center;padding:30px;">No players match these filters.</td></tr>`;
     return;

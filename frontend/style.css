@@ -203,13 +203,11 @@ td.css { font-weight: 700; }
   background: var(--bg-2); border: 1px solid var(--line);
   font-size: 11px; font-weight: 600; letter-spacing: 0.5px;
 }
-.team-cell { display: inline-flex; align-items: center; gap: 6px; }
+.team-cell { display: inline-flex; align-items: center; gap: 5px; }
 .team-logo {
-  width: 20px; height: 20px;
+  width: 14px; height: 14px;
   object-fit: contain;
   vertical-align: middle;
-  border-radius: 3px;
-  background: rgba(255,255,255,0.04);
-  padding: 1px;
+  flex-shrink: 0;
 }
 .no-data { font-style: italic; color: var(--muted); font-size: 11px; }

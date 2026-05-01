@@ -8,10 +8,15 @@ from sqlalchemy.orm import Session
 from ..auth import require_admin
 from ..config import settings
 from ..db import SessionLocal, get_db
-from ..services.aggregation import aggregate_all_players, compute_lobby_lp, compute_role_distributions
+from ..services.aggregation import (
+    aggregate_all_players,
+    compute_champion_distributions,
+    compute_lobby_lp,
+    compute_role_distributions,
+)
 from ..services.ingestion import run_ingestion
 from ..services.leaguepedia import run_leaguepedia_sync_sync
-from ..services.scoring import score_all
+from ..services.scoring import score_all, score_all_champions, score_all_smurfs
 from ..services.tournament_ingestion import DEFAULT_LEAGUE_SLUGS, run_tournament_sync_sync
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -29,11 +34,17 @@ def _run_pipeline_job(job_id: str, player_limit: int, matches_per_player: int):
         _jobs[job_id]["step"] = "aggregate"
         db = SessionLocal()
         try:
+            compute_lobby_lp(db)
             aggregate_all_players(db)
             _jobs[job_id]["step"] = "distributions"
-            compute_role_distributions(db, min_games=1)  # min=1 in MVP; tighten in prod
+            compute_role_distributions(db, min_games=1)
+            compute_champion_distributions(db, min_games_per_champion=10)
+            _jobs[job_id]["step"] = "smurf_scoring"
+            score_all_smurfs(db)
             _jobs[job_id]["step"] = "scoring"
             score_all(db, min_games=1)
+            _jobs[job_id]["step"] = "champion_scoring"
+            score_all_champions(db)
         finally:
             db.close()
 
@@ -62,13 +73,22 @@ def job_status(job_id: str):
 
 @router.post("/recompute")
 def recompute(min_games: int = Query(default=None), db: Session = Depends(get_db)):
-    """Recompute aggregates, distributions, and CSS without re-pulling data."""
+    """Recompute aggregates, distributions, smurf scores, and CSS (role + champion)."""
     min_games = min_games if min_games is not None else settings.min_games
     n_lobby = compute_lobby_lp(db)
     n_aggs = aggregate_all_players(db)
     compute_role_distributions(db, min_games=max(1, min_games))
+    compute_champion_distributions(db, min_games_per_champion=10)
+    n_smurf = score_all_smurfs(db)              # must run BEFORE score_all (used in factor)
     n_scored = score_all(db, min_games=max(1, min_games))
-    return {"matches_lobby_lp_updated": n_lobby, "aggregated_players": n_aggs, "scored_aggregates": n_scored}
+    n_champ = score_all_champions(db)
+    return {
+        "matches_lobby_lp_updated": n_lobby,
+        "aggregated_players": n_aggs,
+        "scored_aggregates": n_scored,
+        "smurf_suspect": n_smurf,
+        "champion_baselines": n_champ,
+    }
 
 
 @router.get("/stats")

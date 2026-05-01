@@ -10,6 +10,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..models import (
+    ChampionDistribution,
     ChampionPool,
     MatchParticipant,
     Match,
@@ -138,18 +139,37 @@ def aggregate_player(db: Session, puuid: str, patch: str | None = None,
 
         aggregates.append(agg)
 
-        # Champion pool detail
+        # Champion pool detail (richer stats for per-champion CSS)
+        # Build O(1) match lookup once instead of scanning items per champion
+        match_by_part_id = {mp.id: m for mp, m in items}
         db.query(ChampionPool).filter_by(puuid=puuid, patch=p_patch).delete()
         for cid, ps in champ_counts.items():
+            cs_dur_sec = []
+            for x in ps:
+                m = match_by_part_id.get(x.id)
+                if m and m.game_duration_sec:
+                    cs_dur_sec.append(m.game_duration_sec)
+            avg_dur_min = (_safe_mean(cs_dur_sec) / 60.0) if cs_dur_sec else 30.0
+            avg_dpm = _safe_mean([x.damage_to_champs for x in ps]) / max(avg_dur_min, 1)
+            # Role this player most often plays this champion in
+            role_counts: dict[str, int] = defaultdict(int)
+            for x in ps:
+                role_counts[x.role] += 1
+            top_role = max(role_counts, key=role_counts.get) if role_counts else role
             cp = ChampionPool(
                 puuid=puuid,
                 patch=p_patch,
+                role=top_role,
                 champion_id=cid,
                 champion_name=ps[0].champion_name,
                 games=len(ps),
                 wins=sum(1 for x in ps if x.win),
                 avg_kda=_safe_mean([x.kda for x in ps]),
                 avg_dmg_share=_safe_mean([x.damage_share for x in ps]),
+                avg_kp=_safe_mean([x.kill_participation for x in ps]),
+                avg_gd15=_safe_mean([x.gd_at_15 for x in ps]),
+                avg_csd15=_safe_mean([x.csd_at_15 for x in ps]),
+                avg_dpm=avg_dpm,
             )
             db.add(cp)
 
@@ -254,4 +274,46 @@ def compute_role_distributions(db: Session, min_games: int) -> dict:
             out[(patch, role, metric)] = (mu, sd, len(xs))
     db.commit()
     logger.info("computed %d role distributions", len(out))
+    return out
+
+
+def compute_champion_distributions(db: Session, min_games_per_champion: int = 10) -> dict:
+    """
+    For each (patch, role, champion_id), compute mean/std of champion-level metrics
+    across the Challenger pool. Only computed for champions with N >= min_games_per_champion
+    (default 10) to keep the baseline meaningful.
+    """
+    # Pull all ChampionPool entries grouped by (patch, role, champion)
+    cps = db.query(ChampionPool).filter(ChampionPool.games >= 5).all()  # exclude 1-shot champs from baseline
+    by_prc: dict[tuple[str, str, int], list[ChampionPool]] = defaultdict(list)
+    for cp in cps:
+        if not cp.role:
+            continue
+        by_prc[(cp.patch, cp.role, cp.champion_id)].append(cp)
+
+    metric_attr = {
+        "kda": "avg_kda",
+        "dmg_share": "avg_dmg_share",
+        "kp": "avg_kp",
+        "gd15": "avg_gd15",
+        "csd15": "avg_csd15",
+        "dpm": "avg_dpm",
+    }
+
+    db.query(ChampionDistribution).delete()
+    out: dict[tuple, tuple] = {}
+    for (patch, role, cid), pool in by_prc.items():
+        if len(pool) < min_games_per_champion:
+            continue
+        for metric, attr in metric_attr.items():
+            xs = [getattr(cp, attr) for cp in pool]
+            mu = _safe_mean(xs)
+            sd = _safe_std(xs) or 1e-6
+            db.add(ChampionDistribution(
+                patch=patch, role=role, champion_id=cid, metric=metric,
+                mean=mu, std=sd, n_samples=len(xs),
+            ))
+            out[(patch, role, cid, metric)] = (mu, sd, len(xs))
+    db.commit()
+    logger.info("computed %d champion distributions (min_n=%d)", len(out), min_games_per_champion)
     return out

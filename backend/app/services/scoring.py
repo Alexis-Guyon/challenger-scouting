@@ -10,7 +10,14 @@ from collections import defaultdict
 from sqlalchemy.orm import Session
 
 from ..config import settings
-from ..models import PlayerAggregate, RoleDistribution
+from ..models import (
+    ChampionDistribution,
+    ChampionPool,
+    PlayerAggregate,
+    Player,
+    RankSnapshot,
+    RoleDistribution,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,12 +140,11 @@ def compute_css_for_aggregate(db: Session, agg: PlayerAggregate) -> tuple[float,
     sample_factor = 0.5 + 0.5 * min(1.0, games / settings.min_games)  # 0.5..1.0
 
     player = agg.player
+    # Smurf factor is now continuous: maps smurf_score [0..1] → factor [1.0..0.6].
+    # A clean account (score=0) keeps full CSS; a max-suspicion account drops to 60%.
     smurf_factor = 1.0
-    if player:
-        if player.account_level and player.account_level < 60:
-            smurf_factor = 0.7
-        elif player.smurf_flag:
-            smurf_factor = 0.7
+    if player and player.smurf_score is not None:
+        smurf_factor = max(0.6, 1.0 - 0.4 * player.smurf_score)
 
     # Lobby-LP weighting: average lobby LP for this player's games on this patch+role.
     # >900 LP avg → uplift up to ×1.10; <500 LP avg → discount down to ×0.90.
@@ -158,6 +164,183 @@ def compute_css_for_aggregate(db: Session, agg: PlayerAggregate) -> tuple[float,
         "games_played": games,
     }
     return css_raw, css_final, breakdown
+
+
+CHAMPION_METRIC_WEIGHTS = {
+    "kda": 0.20,
+    "dmg_share": 0.20,
+    "kp": 0.15,
+    "gd15": 0.20,
+    "csd15": 0.10,
+    "dpm": 0.15,
+}
+
+
+def compute_champion_css(db: Session, cp: ChampionPool) -> tuple[float, bool]:
+    """
+    Per-champion CSS, scored against all Challenger players who play this same
+    (patch, role, champion). Returns (score_0_100, has_baseline).
+
+    If the champion has no baseline (N<10 in distribution table), returns (0, False).
+    """
+    dists = (
+        db.query(ChampionDistribution)
+        .filter_by(patch=cp.patch, role=cp.role, champion_id=cp.champion_id)
+        .all()
+    )
+    if not dists:
+        return 0.0, False
+
+    by_metric = {d.metric: (d.mean, d.std) for d in dists}
+    val_attr = {
+        "kda": "avg_kda", "dmg_share": "avg_dmg_share", "kp": "avg_kp",
+        "gd15": "avg_gd15", "csd15": "avg_csd15", "dpm": "avg_dpm",
+    }
+    num, denom = 0.0, 0.0
+    for metric, w in CHAMPION_METRIC_WEIGHTS.items():
+        if metric not in by_metric:
+            continue
+        mu, sd = by_metric[metric]
+        sd = sd or 1e-6
+        x = getattr(cp, val_attr[metric])
+        z = (x - mu) / sd
+        score = max(0.0, min(100.0, 50.0 + 15.0 * z))
+        num += score * w
+        denom += w
+
+    if denom == 0:
+        return 0.0, False
+    return round(num / denom, 1), True
+
+
+def score_all_champions(db: Session) -> int:
+    """Compute champion-level CSS for every ChampionPool entry. Returns count scored."""
+    pool_entries = db.query(ChampionPool).all()
+    n_with_baseline = 0
+    for cp in pool_entries:
+        score, has = compute_champion_css(db, cp)
+        cp.champion_css = score
+        cp.has_champion_baseline = has
+        if has:
+            n_with_baseline += 1
+    db.commit()
+    logger.info("scored champion-level CSS for %d entries (%d with baseline)",
+                len(pool_entries), n_with_baseline)
+    return n_with_baseline
+
+
+# ----------------- Smurf detector (multi-signal rule-based) -----------------
+
+def _smurf_signals_for(level: int, lp: int, total_games: int, wr: float,
+                        max_css: float, min_pool: int, max_pool_games: int) -> dict[str, float]:
+    """Pure function — easy to unit test. Returns dict of triggered signals."""
+    signals: dict[str, float] = {}
+
+    # Signal 1 — Account level vs LP (heaviest)
+    if level < 50 and lp > 400:
+        signals["low_level_high_lp"] = 0.40
+    elif level < 80 and lp > 300:
+        signals["low_level_high_lp"] = 0.25
+    elif level < 120 and lp > 200:
+        signals["low_level_high_lp"] = 0.10
+
+    # Signal 2 — Few lifetime ranked games for the rank
+    if total_games < 50 and lp > 300:
+        signals["low_total_games"] = 0.20
+    elif total_games < 200 and lp > 500:
+        signals["low_total_games"] = 0.10
+
+    # Signal 3 — Suspiciously high winrate
+    if total_games >= 30:
+        if wr > 0.65:
+            signals["wr_too_high"] = 0.15
+        elif wr > 0.60:
+            signals["wr_too_high"] = 0.08
+
+    # Signal 4 — One-trick at this level
+    if min_pool <= 1 and max_pool_games > 25:
+        signals["one_trick_high_games"] = 0.10
+
+    # Signal 5 — Strong CSS combined with low level (cross-check)
+    if level < 60 and max_css > 70:
+        signals["high_css_low_level"] = 0.15
+    elif level < 60 and max_css > 60:
+        signals["high_css_low_level"] = 0.07
+
+    return signals
+
+
+def score_all_smurfs(db: Session) -> int:
+    """
+    Recompute smurf score for every player using batched queries.
+    Returns count of likely smurfs (score > 0.5).
+    """
+    import json
+    from sqlalchemy import func
+    from collections import defaultdict
+
+    # Batch 1: latest rank per puuid (single query, group by puuid taking max snapshot_date)
+    rank_by_puuid: dict[str, RankSnapshot] = {}
+    for r in db.query(RankSnapshot).order_by(RankSnapshot.snapshot_date.desc()).all():
+        if r.puuid not in rank_by_puuid:
+            rank_by_puuid[r.puuid] = r
+
+    # Batch 2: all aggregates grouped by puuid
+    aggs_by_puuid: dict[str, list[PlayerAggregate]] = defaultdict(list)
+    for a in db.query(PlayerAggregate).all():
+        aggs_by_puuid[a.puuid].append(a)
+
+    suspect = 0
+    for p in db.query(Player).all():
+        rank = rank_by_puuid.get(p.puuid)
+        lp = rank.lp if rank else 0
+        total_games = (rank.wins + rank.losses) if rank else 0
+        wr = (rank.wins / total_games) if total_games else 0
+        level = p.account_level or 0
+
+        aggs = aggs_by_puuid.get(p.puuid, [])
+        max_css = max((a.css_score for a in aggs), default=0)
+        if aggs:
+            biggest = max(aggs, key=lambda a: a.games_played)
+            min_pool = biggest.champion_pool_size
+            max_pool_games = biggest.games_played
+        else:
+            min_pool, max_pool_games = 99, 0
+
+        signals = _smurf_signals_for(level, lp, total_games, wr, max_css, min_pool, max_pool_games)
+        score = min(1.0, sum(signals.values()))
+        p.smurf_score = score
+        p.smurf_signals = json.dumps(signals) if signals else None
+        p.smurf_flag = score > 0.5
+        if score > 0.5:
+            suspect += 1
+    db.commit()
+    logger.info("recomputed smurf scores for all players (%d suspect)", suspect)
+    return suspect
+
+
+# Back-compat: per-player function (used by API request when surfacing live)
+def compute_smurf_score(db: Session, player: Player) -> tuple[float, dict]:
+    rank = (
+        db.query(RankSnapshot)
+        .filter_by(puuid=player.puuid)
+        .order_by(RankSnapshot.snapshot_date.desc())
+        .first()
+    )
+    lp = rank.lp if rank else 0
+    total_games = (rank.wins + rank.losses) if rank else 0
+    wr = (rank.wins / total_games) if total_games else 0
+    level = player.account_level or 0
+    aggs = db.query(PlayerAggregate).filter_by(puuid=player.puuid).all()
+    max_css = max((a.css_score for a in aggs), default=0)
+    if aggs:
+        biggest = max(aggs, key=lambda a: a.games_played)
+        min_pool = biggest.champion_pool_size
+        max_pool_games = biggest.games_played
+    else:
+        min_pool, max_pool_games = 99, 0
+    signals = _smurf_signals_for(level, lp, total_games, wr, max_css, min_pool, max_pool_games)
+    return min(1.0, sum(signals.values())), signals
 
 
 def _lobby_factor_for(db: Session, agg: PlayerAggregate) -> float:

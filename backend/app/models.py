@@ -25,6 +25,8 @@ class Player(Base):
     account_level = Column(Integer, default=0)
     total_games_lifetime = Column(Integer, default=0)
     smurf_flag = Column(Boolean, default=False)
+    smurf_score = Column(Float, default=0.0)         # 0..1 multi-signal score (replaces simple flag)
+    smurf_signals = Column(Text, nullable=True)      # JSON: which signals fired and their weights
     last_updated = Column(DateTime, nullable=True)
 
     ranks = relationship("RankSnapshot", back_populates="player", cascade="all, delete-orphan")
@@ -161,12 +163,19 @@ class ChampionPool(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     puuid = Column(String, ForeignKey("players.puuid"), index=True)
     patch = Column(String, index=True)
-    champion_id = Column(Integer)
+    role = Column(String, index=True, nullable=True)  # role this player mostly used the champ in
+    champion_id = Column(Integer, index=True)
     champion_name = Column(String)
     games = Column(Integer, default=0)
     wins = Column(Integer, default=0)
     avg_kda = Column(Float, default=0)
     avg_dmg_share = Column(Float, default=0)
+    avg_kp = Column(Float, default=0)
+    avg_gd15 = Column(Float, default=0)
+    avg_csd15 = Column(Float, default=0)
+    avg_dpm = Column(Float, default=0)
+    champion_css = Column(Float, default=0.0)         # 0..100 vs champion's role distribution
+    has_champion_baseline = Column(Boolean, default=False)  # True if N>=10 in distribution table
 
 
 class Tournament(Base):
@@ -321,4 +330,22 @@ class RoleDistribution(Base):
 
     __table_args__ = (
         UniqueConstraint("patch", "role", "metric", name="uq_dist_patch_role_metric"),
+    )
+
+
+class ChampionDistribution(Base):
+    """μ and σ per metric, per (patch, role, champion). Computed only when N >= 10."""
+
+    __tablename__ = "champion_distributions"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    patch = Column(String, index=True)
+    role = Column(String, index=True)
+    champion_id = Column(Integer, index=True)
+    metric = Column(String, index=True)
+    mean = Column(Float)
+    std = Column(Float)
+    n_samples = Column(Integer)
+
+    __table_args__ = (
+        UniqueConstraint("patch", "role", "champion_id", "metric", name="uq_chdist_patch_role_champ_metric"),
     )

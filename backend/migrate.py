@@ -15,11 +15,22 @@ from sqlalchemy import inspect, text
 from app.db import Base, engine
 
 
-# (table, column_name, sqlite_type, postgres_type)
-# We send only the type string after ADD COLUMN; this works on both backends.
+# (table, column_name, ddl_type)
+# Both SQLite and Postgres accept VARCHAR / INTEGER / FLOAT.
 NEW_COLUMNS = [
     ("player_meta", "lolesports_id", "VARCHAR"),
     ("matches", "avg_lobby_lp", "INTEGER DEFAULT 0"),
+    # Smurf detector ML/rule-based score
+    ("players", "smurf_score", "FLOAT DEFAULT 0.0"),
+    ("players", "smurf_signals", "TEXT"),
+    # Champion-specific CSS
+    ("champion_pool", "role", "VARCHAR"),
+    ("champion_pool", "avg_kp", "FLOAT DEFAULT 0.0"),
+    ("champion_pool", "avg_gd15", "FLOAT DEFAULT 0.0"),
+    ("champion_pool", "avg_csd15", "FLOAT DEFAULT 0.0"),
+    ("champion_pool", "avg_dpm", "FLOAT DEFAULT 0.0"),
+    ("champion_pool", "champion_css", "FLOAT DEFAULT 0.0"),
+    ("champion_pool", "has_champion_baseline", "BOOLEAN DEFAULT FALSE"),
 ]
 
 

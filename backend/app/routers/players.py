@@ -43,6 +43,13 @@ def _serialize_player(p: Player, db: Session) -> dict:
             "is_retired": meta.is_retired,
             "contract_end": meta.contract_end,
         }
+    import json as _json
+    smurf_signals = None
+    if p.smurf_signals:
+        try:
+            smurf_signals = _json.loads(p.smurf_signals)
+        except Exception:
+            smurf_signals = None
     return {
         "puuid": p.puuid,
         "summoner_name": p.summoner_name,
@@ -50,6 +57,8 @@ def _serialize_player(p: Player, db: Session) -> dict:
         "main_role": p.main_role,
         "account_level": p.account_level,
         "smurf_flag": p.smurf_flag,
+        "smurf_score": round(p.smurf_score or 0.0, 2),
+        "smurf_signals": smurf_signals,
         "tier": latest_rank.tier if latest_rank else None,
         "lp": latest_rank.lp if latest_rank else None,
         "wins": latest_rank.wins if latest_rank else None,
@@ -125,11 +134,19 @@ def get_player(
             "champion_id": cp.champion_id,
             "champion_name": cp.champion_name,
             "patch": cp.patch,
+            "role": cp.role,
             "games": cp.games,
             "wins": cp.wins,
             "winrate": round((cp.wins / cp.games * 100) if cp.games else 0, 1),
             "avg_kda": round(cp.avg_kda, 2),
             "avg_dmg_share": round(cp.avg_dmg_share, 3),
+            "avg_kp": round(cp.avg_kp, 3),
+            "avg_gd15": round(cp.avg_gd15, 1),
+            "avg_csd15": round(cp.avg_csd15, 1),
+            "avg_dpm": round(cp.avg_dpm, 1),
+            # Per-champion CSS vs same-champion Challenger baseline (None if N<10)
+            "champion_css": cp.champion_css if cp.has_champion_baseline else None,
+            "has_baseline": cp.has_champion_baseline,
         }
         for cp in pool
     ]

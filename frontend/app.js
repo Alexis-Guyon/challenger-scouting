@@ -99,7 +99,17 @@ function scoreLabel(s) {
   return 'Below avg';
 }
 function smurfBadge(p) {
-  return p.smurf_flag ? `<span class="score-pill s-weak" title="account level &lt; 60 or flagged">smurf?</span>` : '';
+  const score = p.smurf_score || 0;
+  if (score < 0.3) return '';
+  // Build a tooltip with which signals fired
+  let tip = `Smurf likelihood: ${Math.round(score*100)}%`;
+  if (p.smurf_signals && typeof p.smurf_signals === 'object') {
+    tip += '\n' + Object.entries(p.smurf_signals)
+      .map(([k,v]) => `· ${k}: +${(v*100).toFixed(0)}%`).join('\n');
+  }
+  const cls = score >= 0.6 ? 's-weak' : score >= 0.4 ? 's-avg' : 's-strong';
+  const label = score >= 0.6 ? 'smurf!' : score >= 0.4 ? 'smurf?' : 'smurf?';
+  return `<span class="score-pill ${cls}" title="${tip.replace(/"/g, '&quot;')}">${label} ${Math.round(score*100)}</span>`;
 }
 function proBadge(p) {
   if (!p.meta) return '<span class="muted" style="font-size:11px;">—</span>';
@@ -350,16 +360,20 @@ async function loadPlayer(puuid) {
     <div class="grid-2">
       <div class="card">
         <h3>Champion pool</h3>
+        <p class="muted" style="margin-top:0;font-size:11px;">Champ-CSS = score vs same-champion Challenger baseline (≥10 mains required). "—" = not enough data to baseline.</p>
         <table>
-          <thead><tr><th>Champion</th><th>Games</th><th>WR</th><th>KDA</th><th>Dmg %</th></tr></thead>
+          <thead><tr><th>Champion</th><th>Games</th><th>WR</th><th>KDA</th><th>KP</th><th>GD@15</th><th>Dmg %</th><th>Champ CSS</th></tr></thead>
           <tbody>
-            ${data.champion_pool.slice(0,8).map(cp => `
+            ${data.champion_pool.slice(0,10).map(cp => `
               <tr>
                 <td><strong>${cp.champion_name}</strong></td>
                 <td>${cp.games}</td>
                 <td>${cp.winrate}%</td>
                 <td>${cp.avg_kda}</td>
+                <td>${cp.avg_kp != null ? (cp.avg_kp*100).toFixed(0)+'%' : '—'}</td>
+                <td class="${cp.avg_gd15>=0?'delta-pos':'delta-neg'}">${cp.avg_gd15 ?? '—'}</td>
                 <td>${(cp.avg_dmg_share*100).toFixed(1)}%</td>
+                <td>${cp.champion_css != null ? `<span class="score-pill ${scoreClass(cp.champion_css)}">${cp.champion_css}</span>` : '<span class="muted">—</span>'}</td>
               </tr>`).join('')}
           </tbody>
         </table>

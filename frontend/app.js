@@ -413,94 +413,163 @@ async function loadWatchlist() {
 function initWatchlist() { loadWatchlist(); }
 
 /* ---------------- CHAMPIONS ---------------- */
+let _champRaw = [];
+
 async function loadChampions() {
   const role = document.getElementById('ch-role').value;
-  const patch = document.getElementById('ch-patch').value;
-  const minGames = document.getElementById('ch-min').value || 20;
+  const sort = document.getElementById('ch-sort').value;
+  const minGames = document.getElementById('ch-min').value || 10;
   const params = new URLSearchParams();
   if (role) params.set('role', role);
-  if (patch) params.set('patch', patch);
   params.set('min_total_games', minGames);
-  const data = await API('/champions?' + params);
+  params.set('sort', sort);
+  _champRaw = await API('/champions?' + params);
+  renderChampionGrid();
+}
 
-  const tbody = document.querySelector('#ch-table tbody');
-  if (!data.length) {
-    tbody.innerHTML = `<tr><td colspan="9" class="muted" style="text-align:center;padding:30px;">No champions match these filters.</td></tr>`;
+function renderChampionGrid() {
+  const grid = document.getElementById('ch-grid');
+  const counter = document.getElementById('ch-counter');
+  const search = (document.getElementById('ch-search').value || '').toLowerCase().trim();
+  const filtered = search
+    ? _champRaw.filter(c => c.champion_name.toLowerCase().includes(search))
+    : _champRaw;
+
+  counter.textContent = `${filtered.length} champion${filtered.length>1?'s':''} match — click any card for the player leaderboard.`;
+
+  if (!filtered.length) {
+    grid.innerHTML = `<p class="muted" style="text-align:center;padding:30px;">No champions match.</p>`;
     return;
   }
-  tbody.innerHTML = data.slice(0, 200).map(c => `
-    <tr>
-      <td><strong>${c.champion_name}</strong></td>
-      <td><span class="role-tag">${c.role || '—'}</span></td>
-      <td>${c.patch || '—'}</td>
-      <td>${c.total_mains}</td>
-      <td>${c.total_games}</td>
-      <td>${c.winrate}%</td>
-      <td>${c.avg_kda}</td>
-      <td>${c.baselined ? `<span class="score-pill ${scoreClass(c.avg_champ_css)}">${c.avg_champ_css}</span>` : '<span class="muted">—</span>'}</td>
-      <td><button class="secondary view-champ" data-id="${c.champion_id}" data-role="${c.role}" data-name="${c.champion_name}">View top players</button></td>
-    </tr>
+
+  grid.innerHTML = filtered.slice(0, 240).map(c => `
+    <div class="champion-card" data-id="${c.champion_id}" data-role="${c.role}">
+      <div class="champion-card-head">
+        <img class="champion-icon" src="${c.icon_url}" alt="${c.champion_name}" onerror="this.style.opacity='0.2'"/>
+        <div style="flex:1;min-width:0;">
+          <div class="champion-card-name">${c.champion_name}</div>
+          <div class="champion-card-meta">
+            <span class="role-tag">${c.role}</span>
+            ${c.latest_patch ? ` · ${c.latest_patch}` : ''}
+          </div>
+        </div>
+      </div>
+      <div class="champion-card-stats">
+        <div><div class="label">Games</div><div class="value">${c.total_games}</div></div>
+        <div><div class="label">Mains</div><div class="value">${c.total_mains}</div></div>
+        <div><div class="label">Avg WR</div><div class="value">${c.winrate}%</div></div>
+        <div><div class="label">Avg KDA</div><div class="value">${c.avg_kda}</div></div>
+      </div>
+      <div class="champion-card-css">
+        ${c.baselined
+          ? `Best Champ-CSS <strong style="color:var(--accent);">${c.max_champ_css}</strong> · avg ${c.avg_champ_css}`
+          : `<span class="muted">No baseline yet (need ≥5 mains)</span>`}
+      </div>
+    </div>
   `).join('');
-  document.querySelectorAll('.view-champ').forEach(b =>
-    b.addEventListener('click', () => loadChampionDetail(b.dataset.id, b.dataset.role, b.dataset.name))
+
+  grid.querySelectorAll('.champion-card').forEach(card =>
+    card.addEventListener('click', () => openChampionModal(card.dataset.id, card.dataset.role))
   );
 }
 
-async function loadChampionDetail(championId, role, name) {
-  const detail = document.getElementById('ch-detail');
-  detail.innerHTML = `<div class="card"><h3>Loading top ${role} ${name}…</h3></div>`;
+async function openChampionModal(championId, role) {
+  const modal = document.getElementById('champ-modal');
+  const title = document.getElementById('champ-modal-title');
+  const body = document.getElementById('champ-modal-body');
+  modal.classList.add('open');
+  title.textContent = 'Loading…';
+  body.innerHTML = `<p class="muted">Loading top players…</p>`;
+
   const params = new URLSearchParams();
   if (role) params.set('role', role);
   params.set('limit', 50);
   params.set('min_games', 3);
   const data = await API(`/champions/${championId}?` + params);
   const items = data.items || [];
+  title.textContent = `${data.champion_name || 'Champion'} — top ${role || 'all roles'}`;
 
-  detail.innerHTML = `
-    <div class="card">
-      <h3>Top players on ${data.champion_name || name} ${role ? '· ' + role : ''}</h3>
-      <p class="muted" style="margin-top:0;font-size:12px;">Sorted by Champ-CSS (champion-specific score vs same-champion Challenger baseline).</p>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>#</th><th>Summoner</th><th>Pro</th><th>Team</th><th>Tier</th><th>LP</th>
-              <th>Patch</th><th>Games</th><th>WR</th><th>KDA</th><th>Dmg %</th><th>Champ-CSS</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            ${items.map((p, i) => `
-              <tr>
-                <td>${i+1}</td>
-                <td><strong>${p.summoner_name||'(unknown)'}</strong></td>
-                <td>${p.meta ? '<span class="score-pill s-strong">pro</span>' : '<span class="muted">—</span>'}</td>
-                <td>${p.meta && p.meta.current_team_logo_url ? `<span class="team-cell"><img class="team-logo" src="${p.meta.current_team_logo_url}" onerror="this.style.display='none'"/> <span>${p.meta.current_team}</span></span>` : (p.meta && p.meta.current_team ? p.meta.current_team : '<span class="muted">—</span>')}</td>
-                <td><span class="role-tag">${p.tier || '—'}</span></td>
-                <td>${p.lp ?? '—'}</td>
-                <td>${p.patch || '—'}</td>
-                <td>${p.games}</td>
-                <td>${p.winrate}%</td>
-                <td>${p.avg_kda}</td>
-                <td>${(p.avg_dmg_share*100).toFixed(1)}%</td>
-                <td>${p.has_champion_baseline ? `<span class="score-pill ${scoreClass(p.champion_css)}">${p.champion_css}</span>` : '<span class="muted">—</span>'}</td>
-                <td><button class="secondary view-from-champ" data-puuid="${p.puuid}">View</button></td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
+  // Top-line summary
+  const champData = _champRaw.find(c => c.champion_id == championId && c.role === role);
+
+  body.innerHTML = `
+    <div class="champ-modal-header">
+      <img src="${data.icon_url}" alt="${data.champion_name||''}" onerror="this.style.opacity='0.3'"/>
+      <div style="flex:1;">
+        <h2 style="margin:0 0 4px;">${data.champion_name || 'Champion'}</h2>
+        <div class="muted" style="font-size:12px;">${role ? `Role: ${role}` : 'All roles'} · ${items.length} player${items.length>1?'s':''} with ≥3 games shown</div>
+        ${champData ? `
+        <div class="stats" style="margin-top:8px;">
+          <div><strong>${champData.total_games}</strong> total games</div>
+          <div><strong>${champData.total_mains}</strong> distinct mains</div>
+          <div><strong>${champData.winrate}%</strong> avg WR</div>
+          <div><strong>${champData.avg_kda}</strong> avg KDA</div>
+        </div>` : ''}
       </div>
     </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>Summoner</th><th>Pro</th><th>Team</th><th>Tier</th><th>LP</th>
+            <th>Patch</th><th>Games</th><th>WR</th><th>KDA</th><th>Dmg %</th><th>Champ-CSS</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map((p, i) => `
+            <tr>
+              <td>${i+1}</td>
+              <td><strong>${p.summoner_name||'(unknown)'}</strong></td>
+              <td>${p.meta ? '<span class="score-pill s-strong">pro</span>' : '<span class="muted">—</span>'}</td>
+              <td>${
+                p.meta && p.meta.current_team_logo_url
+                  ? `<span class="team-cell"><img class="team-logo" src="${p.meta.current_team_logo_url}" onerror="this.style.display='none'"/> <span>${p.meta.current_team}</span></span>`
+                  : (p.meta && p.meta.current_team ? p.meta.current_team : '<span class="muted">—</span>')
+              }</td>
+              <td><span class="role-tag">${p.tier || '—'}</span></td>
+              <td>${p.lp ?? '—'}</td>
+              <td>${p.patch || '—'}</td>
+              <td>${p.games}</td>
+              <td>${p.winrate}%</td>
+              <td>${p.avg_kda}</td>
+              <td>${(p.avg_dmg_share*100).toFixed(1)}%</td>
+              <td>${p.has_champion_baseline ? `<span class="score-pill ${scoreClass(p.champion_css)}">${p.champion_css}</span>` : '<span class="muted">—</span>'}</td>
+              <td><button class="secondary view-from-champ" data-puuid="${p.puuid}">View</button></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
   `;
-  document.querySelectorAll('.view-from-champ').forEach(b =>
-    b.addEventListener('click', () => { window._selectedPuuid = b.dataset.puuid; setView('player'); })
+  body.querySelectorAll('.view-from-champ').forEach(b =>
+    b.addEventListener('click', () => {
+      window._selectedPuuid = b.dataset.puuid;
+      modal.classList.remove('open');
+      setView('player');
+    })
   );
 }
 
 function initChampions() {
-  document.getElementById('ch-apply').addEventListener('click', loadChampions);
+  document.getElementById('ch-role').addEventListener('change', loadChampions);
+  document.getElementById('ch-sort').addEventListener('change', loadChampions);
+  document.getElementById('ch-min').addEventListener('change', loadChampions);
+  document.getElementById('ch-search').addEventListener('input', () => {
+    // debounce-light
+    clearTimeout(window._chSearchT);
+    window._chSearchT = setTimeout(renderChampionGrid, 150);
+  });
   loadChampions();
 }
+
+document.getElementById('champ-modal-close').addEventListener('click', () =>
+  document.getElementById('champ-modal').classList.remove('open')
+);
+document.getElementById('champ-modal').addEventListener('click', (e) => {
+  if (e.target.id === 'champ-modal') e.currentTarget.classList.remove('open');
+});
 
 /* ---------------- PLAYER ---------------- */
 function initPlayer() {

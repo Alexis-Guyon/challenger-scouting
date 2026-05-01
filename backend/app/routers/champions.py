@@ -24,16 +24,23 @@ from ..models import ChampionPool, Player, PlayerAggregate, PlayerMeta, RankSnap
 router = APIRouter(prefix="/champions", tags=["champions"], dependencies=[Depends(get_current_user)])
 
 
+def _champion_icon_url(champion_id: int) -> str:
+    """Community Dragon CDN — same source as profile icons, no patch needed."""
+    return f"https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/champion-icons/{champion_id}.png"
+
+
 @router.get("")
 def list_champions(
     role: str | None = Query(default=None, description="Filter by role (TOP/JGL/MID/ADC/SUP)"),
-    patch: str | None = Query(default=None, description="Patch filter, e.g. '16.9'"),
-    min_total_games: int = Query(default=20),
+    patch: str | None = Query(default=None, description="Patch filter — when set, only that patch is aggregated"),
+    min_total_games: int = Query(default=10),
+    sort: str = Query(default="games", description="games | winrate | css | mains"),
     db: Session = Depends(get_db),
 ):
     """
-    Return every champion played in our DB, with aggregate stats. One row per
-    (champion_id, role, patch).
+    Return every champion played in our DB. By default we aggregate ACROSS
+    patches (one row per champion_id × role) so the UI isn't cluttered with
+    "Ezreal 16.9 / Ezreal 16.8 / Ezreal 16.7" rows. Pass ?patch=X.Y to scope.
     """
     q = db.query(ChampionPool)
     if role:
@@ -44,37 +51,49 @@ def list_champions(
 
     by_key: dict[tuple, list[ChampionPool]] = defaultdict(list)
     for cp in rows:
-        if not cp.champion_name:
+        if not cp.champion_name or not cp.role:
             continue
-        by_key[(cp.champion_id, cp.champion_name, cp.role, cp.patch)].append(cp)
+        by_key[(cp.champion_id, cp.champion_name, cp.role)].append(cp)
 
     out = []
-    for (cid, name, r, p), items in by_key.items():
+    for (cid, name, r), items in by_key.items():
         total_games = sum(it.games for it in items)
         if total_games < min_total_games:
             continue
         total_wins = sum(it.wins for it in items)
+        # Distinct mains = distinct puuids (a player may have rows on multiple patches)
+        distinct_mains = len({it.puuid for it in items})
+        # Weighted avg KDA: bigger samples weigh more
         avg_kda = sum(it.avg_kda * it.games for it in items) / max(total_games, 1)
         n_baselined = sum(1 for it in items if getattr(it, "has_champion_baseline", False))
-        n_with_score = sum(1 for it in items if getattr(it, "champion_css", 0))
-        if n_with_score:
-            avg_champ_css = sum(getattr(it, "champion_css", 0) for it in items) / n_with_score
-        else:
-            avg_champ_css = 0
+        scored = [getattr(it, "champion_css", 0) for it in items if getattr(it, "champion_css", 0)]
+        avg_champ_css = sum(scored) / len(scored) if scored else 0
+        max_champ_css = max(scored) if scored else 0
+        # Latest patch where this champ was played (so the UI can show recency)
+        latest_patch = max((it.patch or "" for it in items), default="")
+
         out.append({
             "champion_id": cid,
             "champion_name": name,
+            "icon_url": _champion_icon_url(cid),
             "role": r,
-            "patch": p,
-            "total_mains": len(items),
+            "latest_patch": latest_patch,
+            "total_mains": distinct_mains,
             "total_games": total_games,
             "winrate": round(total_wins / total_games * 100, 1) if total_games else 0,
             "avg_kda": round(avg_kda, 2),
             "baselined": n_baselined > 0,
             "avg_champ_css": round(avg_champ_css, 1),
+            "max_champ_css": round(max_champ_css, 1),
         })
 
-    out.sort(key=lambda x: (-x["total_games"], x["champion_name"]))
+    sort_key = {
+        "games": lambda x: -x["total_games"],
+        "winrate": lambda x: -x["winrate"],
+        "css": lambda x: -x["max_champ_css"],
+        "mains": lambda x: -x["total_mains"],
+    }.get(sort, lambda x: -x["total_games"])
+    out.sort(key=lambda x: (sort_key(x), x["champion_name"]))
     return out
 
 
@@ -109,7 +128,7 @@ def champion_leaderboard(
     rows = q.limit(limit * 2).all()
 
     if not rows:
-        return {"champion_id": champion_id, "items": []}
+        return {"champion_id": champion_id, "icon_url": _champion_icon_url(champion_id), "items": []}
 
     champion_name = rows[0][0].champion_name
 
@@ -156,6 +175,7 @@ def champion_leaderboard(
     return {
         "champion_id": champion_id,
         "champion_name": champion_name,
+        "icon_url": _champion_icon_url(champion_id),
         "total": len(rows),
         "items": items,
     }

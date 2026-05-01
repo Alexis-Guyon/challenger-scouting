@@ -70,6 +70,17 @@
   </header>
   <main id="app"></main>
 
+  <!-- Champion deep-dive modal -->
+  <div id="champ-modal" class="match-modal" aria-hidden="true">
+    <div class="match-modal-card">
+      <div class="match-modal-head">
+        <h3 id="champ-modal-title">Champion</h3>
+        <button id="champ-modal-close" class="secondary" style="padding:4px 10px;">✕</button>
+      </div>
+      <div id="champ-modal-body" class="match-modal-body"></div>
+    </div>
+  </div>
+
   <!-- Match deep-dive modal -->
   <div id="match-modal" class="match-modal" aria-hidden="true">
     <div class="match-modal-card">
@@ -210,29 +221,23 @@
           <option value="SUP">SUP</option>
         </select>
       </label>
-      <label>Patch
-        <input id="ch-patch" type="text" placeholder="e.g. 16.9"/>
+      <label>Sort by
+        <select id="ch-sort">
+          <option value="games">Total games</option>
+          <option value="winrate">Winrate</option>
+          <option value="css">Best Champ-CSS</option>
+          <option value="mains">Distinct mains</option>
+        </select>
       </label>
-      <label>Min total games (across all mains)
-        <input id="ch-min" type="number" value="20" min="1"/>
+      <label>Min games
+        <input id="ch-min" type="number" value="10" min="1"/>
       </label>
-      <button id="ch-apply">Apply</button>
+      <label>Search
+        <input id="ch-search" type="text" placeholder="Kaisa, Faker, …"/>
+      </label>
     </div>
-    <p class="muted" style="font-size:12px;margin:0 0 10px;">Click a champion → leaderboard of best players ON that champion (ordered by Champ-CSS).</p>
-    <div class="table-wrap">
-      <table id="ch-table">
-        <thead>
-          <tr>
-            <th>Champion</th><th>Role</th><th>Patch</th>
-            <th title="Distinct mains in our DB">Mains</th>
-            <th>Total games</th><th>Avg WR</th><th>Avg KDA</th><th>Avg Champ-CSS</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    <div id="ch-detail" style="margin-top:24px;"></div>
+    <p id="ch-counter" class="muted" style="font-size:12px;margin:0 0 14px;"></p>
+    <div id="ch-grid" class="champion-grid"></div>
   </section>
 </template>
 

@@ -239,6 +239,11 @@ function ageCell(p) {
   if (!p.meta || !p.meta.age) return '<span class="muted">—</span>';
   return p.meta.age;
 }
+function tierBadge(tier) {
+  if (!tier) return '<span class="muted">—</span>';
+  const cls = `tier-${tier.toUpperCase()}`;
+  return `<span class="tier-badge ${cls}">${tier}</span>`;
+}
 function risingBadge(row) {
   return row.is_rising_star
     ? '<span class="score-pill s-elite" title="CSS up ≥6 pts over 3+ consecutive snapshots" style="margin-left:6px;">🚀 rising</span>'
@@ -345,7 +350,7 @@ async function loadLeaderboard() {
       <td>${proBadge(row)}</td>
       <td>${teamCell(row)}</td>
       <td>${ageCell(row)}</td>
-      <td><span class="role-tag">${row.tier || '—'}</span></td>
+      <td>${tierBadge(row.tier)}</td>
       <td>${row.lp ?? '—'}</td>
       <td><span class="role-tag">${row.role || '—'}</span></td>
       <td>${row.patch || '—'}</td>
@@ -390,7 +395,7 @@ async function loadWatchlist() {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><strong>${row.summoner_name || '(unknown)'}</strong></td>
-      <td><span class="role-tag">${row.tier || '—'}</span></td>
+      <td>${tierBadge(row.tier)}</td>
       <td>${row.lp ?? '—'}</td>
       <td><span class="role-tag">${row.role || '—'}</span></td>
       <td>${row.games_played}</td>
@@ -538,7 +543,7 @@ async function openChampionModal(championId, role) {
                   ? `<span class="team-cell"><img class="team-logo" src="${p.meta.current_team_logo_url}" onerror="this.style.display='none'"/> <span>${p.meta.current_team}</span></span>`
                   : (p.meta && p.meta.current_team ? p.meta.current_team : '<span class="muted">—</span>')
               }</td>
-              <td><span class="role-tag">${p.tier || '—'}</span></td>
+              <td>${tierBadge(p.tier)}</td>
               <td>${p.lp ?? '—'}</td>
               <td>${p.patch || '—'}</td>
               <td>${p.games}</td>
@@ -791,7 +796,7 @@ async function loadPlayer(puuid) {
         ${headerAvatar}
         <div style="flex:1;min-width:0;">
           <h2 style="margin:0 0 2px;">${p.summoner_name} ${smurfBadge(p)} <span class="star ${watched?'active':''}" id="profile-star" data-puuid="${puuid}" style="font-size:22px;margin-left:8px;">${watched?'★':'☆'}</span></h2>
-          <div class="muted">${(p.region||'').toUpperCase()} · ${p.tier || '—'} ${p.lp ? p.lp + ' LP' : ''} · Account lvl ${p.account_level || '?'}</div>
+          <div class="muted">${(p.region||'').toUpperCase()} · ${tierBadge(p.tier)} ${p.lp != null ? p.lp + ' LP' : ''} · Account lvl ${p.account_level || '?'}</div>
           <div style="margin-top:6px;font-size:13px;">${metaLine}</div>
         </div>
       </div>

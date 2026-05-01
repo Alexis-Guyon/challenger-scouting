@@ -474,7 +474,9 @@ function renderProIdentity(meta) {
   const prev = (meta.previous_teams || []).slice(0, 8);
   const accounts = meta.accounts || [];
   const primaryAcc = accounts[0];
-  const iconUrl = primaryAcc ? profileIconUrl(primaryAcc.profile_icon_id) : null;
+  // Prefer Leaguepedia headshot (real photo); fall back to Riot in-game icon.
+  const iconUrl = meta.player_image_url
+    || (primaryAcc ? profileIconUrl(primaryAcc.profile_icon_id) : null);
 
   return `
     <div class="card pro-identity">

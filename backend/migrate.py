@@ -37,6 +37,8 @@ NEW_COLUMNS = [
     # Lolpros full profile cache (social media, previous teams, peak/seasons)
     ("player_meta", "lolpros_slug", "VARCHAR"),
     ("player_meta", "lolpros_profile_json", "TEXT"),
+    # Leaguepedia headshot (Special:FilePath URL)
+    ("player_meta", "player_image_url", "VARCHAR"),
 ]
 
 

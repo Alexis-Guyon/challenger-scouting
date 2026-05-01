@@ -57,6 +57,8 @@ def _serialize_player(p: Player, db: Session) -> dict:
             "current_team": meta.current_team,
             "current_team_tag": meta.current_team_tag,
             "current_team_logo_url": _https(meta.current_team_logo_url),
+            "player_image_url": meta.player_image_url,
+            "birthdate": meta.birthdate,
             "is_fa": (meta.current_team or "") == "" and not meta.is_retired,
             "is_retired": meta.is_retired,
             "contract_end": meta.contract_end,

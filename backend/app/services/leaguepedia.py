@@ -112,6 +112,16 @@ def _calc_age(birthdate: str | None) -> Optional[int]:
         return None
 
 
+def _file_path_url(filename: str | None) -> str | None:
+    """Build a public URL for a Leaguepedia file. lol.fandom.com Special:FilePath
+    redirects to the actual CDN-hosted image — works for <img src=...>."""
+    if not filename:
+        return None
+    from urllib.parse import quote
+    f = filename.replace(" ", "_")
+    return f"https://lol.fandom.com/wiki/Special:FilePath/{quote(f)}"
+
+
 def _connect() -> mwclient.Site:
     """
     Connect to lol.fandom.com (Leaguepedia is just the wiki's display name).
@@ -179,6 +189,7 @@ def fetch_active_pros(residencies: Iterable[str] = ("Europe",)) -> list[dict]:
         "IsRetired",
         "SoloqueueIds",
         "ContractEnd",
+        "Image",  # filename of the player's headshot, served via Special:FilePath
     ])
 
     out: list[dict] = []
@@ -224,8 +235,16 @@ def build_lookup(pros: list[dict]) -> dict[str, dict]:
 
 
 def sync_players_with_lookup(db: Session, lookup: dict[str, dict]) -> dict:
+    """
+    ADDITIVE sync — fills in fields Leaguepedia is best at (birthdate→age,
+    contract_end, player photo, leaguepedia_id) without clobbering data
+    Lolpros may already have populated (current_team, country, role, residency).
+
+    The rule: Lolpros is more current for roster/team data; Leaguepedia is
+    richer for biographical/contract data. Run Lolpros sync first, then this.
+    """
     now = datetime.now(timezone.utc)
-    matched = unmatched = fa_count = 0
+    matched = unmatched = images_found = 0
     players = db.query(Player).all()
     for p in players:
         rec = None
@@ -241,34 +260,45 @@ def sync_players_with_lookup(db: Session, lookup: dict[str, dict]) -> dict:
 
         if rec:
             matched += 1
-            current_team = (rec.get("Team") or "").strip()
-            if current_team == "":
-                fa_count += 1
-
-            meta.leaguepedia_id = rec.get("Player")
+            # Always set: leaguepedia identity
+            meta.leaguepedia_id = rec.get("Player") or meta.leaguepedia_id
             overview = rec.get("OverviewPage") or rec.get("Player")
-            meta.leaguepedia_url = (
-                f"https://lol.fandom.com/wiki/{overview.replace(' ', '_')}"
-                if overview else None
-            )
-            meta.country = rec.get("Country") or None
-            meta.nationality_primary = rec.get("NationalityPrimary") or None
-            meta.residency = rec.get("Residency") or None
-            meta.birthdate = rec.get("Birthdate") or None
+            if overview and not meta.leaguepedia_url:
+                meta.leaguepedia_url = f"https://lol.fandom.com/wiki/{overview.replace(' ', '_')}"
+
+            # Biographical data — Leaguepedia is the canonical source
+            meta.birthdate = rec.get("Birthdate") or meta.birthdate
             meta.age = _calc_age(meta.birthdate)
-            meta.role = rec.get("Role") or None
-            meta.current_team = current_team
+            meta.contract_end = rec.get("ContractEnd") or meta.contract_end
+            meta.nationality_primary = rec.get("NationalityPrimary") or meta.nationality_primary
+
+            # Image — Leaguepedia stores filenames; we serve them via Special:FilePath
+            image_filename = (rec.get("Image") or "").strip()
+            if image_filename:
+                meta.player_image_url = _file_path_url(image_filename)
+                images_found += 1
+
+            # Fallback fields — only fill if Lolpros didn't already
+            if not meta.country:
+                meta.country = rec.get("Country") or None
+            if not meta.residency:
+                meta.residency = rec.get("Residency") or None
+            if not meta.current_team:
+                meta.current_team = (rec.get("Team") or "").strip() or None
+
+            # Retired flag is reliable on Leaguepedia
             raw_retired = str(rec.get("IsRetired", "")).strip()
-            meta.is_retired = bool(int(raw_retired)) if raw_retired else False
-            meta.contract_end = rec.get("ContractEnd") or None
+            if raw_retired:
+                meta.is_retired = bool(int(raw_retired))
+
             meta.is_pro = True
         else:
             unmatched += 1
-            meta.is_pro = False
+            # Don't downgrade is_pro = False — Lolpros may have caught them.
         meta.last_synced = now
 
     db.commit()
-    return {"matched": matched, "unmatched": unmatched, "fa": fa_count}
+    return {"matched": matched, "unmatched": unmatched, "images_found": images_found}
 
 
 def run_leaguepedia_sync_sync(db: Session) -> dict:

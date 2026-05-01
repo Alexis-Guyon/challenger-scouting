@@ -127,6 +127,191 @@ def _file_path_url(filename: str | None) -> str | None:
     return f"https://lol.fandom.com/wiki/Special:FilePath/{quote(f)}"
 
 
+# ----------------- Wikitext fallback (when Cargo is dead) -----------------
+#
+# Fandom's Cargo extension is intermittently broken — it returns
+# `internal_api_error_MWException` for ALL queries on ALL tables. The standard
+# MediaWiki action=query / action=parse endpoints still work though, so we
+# parse player pages directly from their wikitext infobox.
+#
+# Infobox shape on lol.fandom.com (Player template):
+#   {{Infobox Player
+#    |id=Caps
+#    |name=Rasmus Borregaard Winther
+#    |country=Denmark
+#    |residency=EMEA
+#    |birth_date_year=1999
+#    |birth_date_month=November
+#    |birth_date_day=17
+#    |role=Mid
+#    |checkboxAutoImage=Yes
+#    |contract=2025-11-15
+#    ...
+#   }}
+#
+# When checkboxAutoImage=Yes, the photo is at <id>.png (e.g. Caps.png).
+# When |image= is explicit, we use that instead.
+
+_MONTHS = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+}
+
+
+def _parse_infobox(wikitext: str) -> dict[str, str]:
+    """Extract key=value pairs from the first {{Infobox ...}} template in wikitext."""
+    if not wikitext:
+        return {}
+    # Find the infobox start
+    start = wikitext.find("{{Infobox ")
+    if start < 0:
+        return {}
+    # Find matching closing braces (depth-aware to skip nested {{...}})
+    depth = 0
+    i = start
+    while i < len(wikitext):
+        if wikitext[i:i+2] == "{{":
+            depth += 1
+            i += 2
+        elif wikitext[i:i+2] == "}}":
+            depth -= 1
+            i += 2
+            if depth == 0:
+                break
+        else:
+            i += 1
+    body = wikitext[start:i]
+    # Parse |key=value lines, ignoring nested templates
+    out: dict[str, str] = {}
+    for line in body.split("\n"):
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line[1:].partition("=")
+        out[key.strip().lower()] = value.strip()
+    return out
+
+
+def _build_birthdate(infobox: dict) -> str | None:
+    """Combine birth_date_year/month/day fields into ISO YYYY-MM-DD."""
+    y = infobox.get("birth_date_year") or ""
+    m = infobox.get("birth_date_month") or ""
+    d = infobox.get("birth_date_day") or ""
+    if not (y and m and d):
+        return None
+    try:
+        year = int(y)
+        if m.isdigit():
+            month = int(m)
+        else:
+            month = _MONTHS.get(m.lower())
+        day = int(d)
+        if not (year and month and day):
+            return None
+        return f"{year:04d}-{month:02d}-{day:02d}"
+    except Exception:
+        return None
+
+
+def _resolve_image_filename(infobox: dict, page_title: str) -> str | None:
+    """Return the image filename (without prefix). Falls back to <id>.png when auto."""
+    explicit = infobox.get("image")
+    if explicit:
+        # Strip leading File: or Image: prefixes
+        explicit = explicit.split("|")[0].strip()
+        explicit = explicit.removeprefix("File:").removeprefix("Image:")
+        return explicit
+    # Auto-image: filename is the player page id with spaces preserved
+    if infobox.get("checkboxautoimage", "").lower() in ("yes", "true", "1"):
+        # Use the page title (the canonical name, e.g. "Hans_sama")
+        return f"{page_title.replace('_', ' ')}.png"
+    return None
+
+
+def fetch_player_via_parse(canonical_name: str) -> dict | None:
+    """
+    Bypass Cargo. Pull the player's wiki page wikitext via action=query and
+    parse the infobox locally. Returns a dict with the same keys our Cargo
+    code expects (Player, Country, Birthdate, Role, IsRetired, ContractEnd,
+    Image), or None if the page doesn't exist.
+    """
+    if not canonical_name:
+        return None
+    import httpx
+
+    title = canonical_name.replace(" ", "_")
+    try:
+        with httpx.Client(timeout=20.0, headers={"User-Agent": USER_AGENT}) as client:
+            r = client.get(
+                f"https://{LP_HOST}/api.php",
+                params={
+                    "action": "query",
+                    "prop": "revisions",
+                    "rvprop": "content",
+                    "rvslots": "main",
+                    "titles": title,
+                    "format": "json",
+                    "formatversion": "2",
+                    "redirects": "1",
+                },
+            )
+            r.raise_for_status()
+            data = r.json()
+    except Exception as exc:
+        logger.warning("Wikitext fetch failed for %s: %s", canonical_name, exc)
+        return None
+
+    pages = data.get("query", {}).get("pages", []) or []
+    if not pages or pages[0].get("missing"):
+        return None
+    page = pages[0]
+    revs = page.get("revisions") or []
+    if not revs:
+        return None
+    content = (revs[0].get("slots") or {}).get("main", {}).get("content", "")
+    info = _parse_infobox(content)
+    if not info:
+        return None
+
+    # Try to detect retired status from common fields
+    is_retired = info.get("isretired", "no").lower() in ("yes", "true", "1")
+
+    # Image filename — use page title (canonical) for auto-image fallback
+    page_title = page.get("title") or canonical_name
+    image_file = _resolve_image_filename(info, page_title)
+
+    return {
+        "Player": info.get("id") or page_title.replace("_", " "),
+        "OverviewPage": page_title.replace(" ", "_"),
+        "Country": info.get("country") or None,
+        "NationalityPrimary": info.get("nationalityprimary") or info.get("country") or None,
+        "Residency": info.get("residency") or None,
+        "Birthdate": _build_birthdate(info),
+        "Role": info.get("role") or None,
+        "Team": info.get("team") or "",
+        "IsRetired": "1" if is_retired else "0",
+        "SoloqueueIds": info.get("ids", "").replace("\n", ";"),
+        "ContractEnd": info.get("contract") or info.get("contractend") or None,
+        "Image": image_file,
+    }
+
+
+def fetch_pros_via_parse(names: list[str], pace_sec: float = 1.0) -> list[dict]:
+    """Bulk wikitext fetch — much more reliable than Cargo when Cargo is broken."""
+    out: list[dict] = []
+    for i, name in enumerate(names, start=1):
+        rec = fetch_player_via_parse(name)
+        if rec:
+            out.append(rec)
+        if i % 20 == 0:
+            logger.info("Wikitext: %d/%d processed (%d matched)", i, len(names), len(out))
+        time.sleep(pace_sec)
+    logger.info("Wikitext: fetched %d profiles from %d names", len(out), len(names))
+    return out
+
+
 _AUTH_STATE: dict = {
     "authed": False,
     "as": None,
@@ -573,13 +758,18 @@ def sync_players_with_lookup(db: Session, lookup: dict[str, dict]) -> dict:
     }
 
 
-def run_leaguepedia_sync_sync(db: Session) -> dict:
+def run_leaguepedia_sync_sync(db: Session, prefer_wikitext: bool = True) -> dict:
     """
     Synchronous Leaguepedia sync.
 
     Strategy:
-    1. Prefer targeted names from PlayerMeta.leaguepedia_id.
-    2. Fallback to active European pros if no targeted names exist.
+    1. Targeted names come from PlayerMeta.leaguepedia_id (Lolpros-matched).
+    2. Default path: wikitext infobox parse via action=query (Cargo bypass).
+       Fandom's Cargo extension has been intermittently down with
+       internal_api_error_MWException; the wikitext path uses standard
+       MediaWiki action=query which keeps working.
+    3. If wikitext yields 0, fall back to Cargo (Player= equality, slow).
+    4. If no targeted names exist, bulk Cargo fetch with Residency filter.
     """
     targets = (
         db.query(PlayerMeta.leaguepedia_id)
@@ -593,18 +783,40 @@ def run_leaguepedia_sync_sync(db: Session) -> dict:
 
     target_names = sorted({r[0] for r in targets if r[0]})
 
-    if target_names:
+    pros: list[dict] = []
+    used_path = "none"
+
+    if target_names and prefer_wikitext:
         logger.info(
-            "Leaguepedia: targeted sync for %d names from Lolpros matches",
+            "Leaguepedia: wikitext-parse sync for %d names (Cargo bypass)",
             len(target_names),
         )
-        pros = fetch_pros_by_name(target_names)
+        pros = fetch_pros_via_parse(target_names, pace_sec=1.0)
+        used_path = "wikitext"
+        if len(pros) < 5 and len(target_names) > 10:
+            # Wikitext path failed too — try Cargo as a last resort.
+            logger.warning("wikitext returned only %d/%d — trying Cargo", len(pros), len(target_names))
+            try:
+                pros = fetch_pros_by_name(target_names)
+                used_path = "cargo_targeted_after_wikitext_failure"
+            except Exception as exc:
+                logger.warning("Cargo also failed: %s", exc)
+    elif target_names:
+        logger.info("Leaguepedia: targeted Cargo sync for %d names", len(target_names))
+        try:
+            pros = fetch_pros_by_name(target_names)
+            used_path = "cargo_targeted"
+        except Exception as exc:
+            logger.warning("Cargo failed (%s) — falling back to wikitext", exc)
+            pros = fetch_pros_via_parse(target_names, pace_sec=1.0)
+            used_path = "wikitext_fallback"
     else:
-        logger.info(
-            "Leaguepedia: no Lolpros-matched names yet, "
-            "falling back to bulk EU residency fetch"
-        )
-        pros = fetch_active_pros(residencies=("Europe",))
+        logger.info("Leaguepedia: no Lolpros-matched names — bulk Cargo fetch")
+        try:
+            pros = fetch_active_pros(residencies=("Europe",))
+            used_path = "cargo_bulk"
+        except Exception as exc:
+            logger.warning("Cargo bulk failed: %s — no fallback for unsupervised mode", exc)
 
     lookup = build_lookup(pros)
 
@@ -613,6 +825,7 @@ def run_leaguepedia_sync_sync(db: Session) -> dict:
     stats["pros_in_lookup"] = len(lookup)
     stats["raw_records_fetched"] = len(pros)
     stats["targeted_names"] = len(target_names)
+    stats["path"] = used_path
     stats["authenticated"] = _AUTH_STATE.get("authed", False)
 
     if not _AUTH_STATE.get("authed"):

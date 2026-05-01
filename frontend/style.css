@@ -225,6 +225,37 @@ td.css { font-weight: 700; }
   font-size: 0;                  /* hide alt text if image fails to load (no broken layout) */
 }
 
+/* Match deep-dive modal */
+.match-modal {
+  position: fixed; inset: 0; z-index: 95;
+  background: rgba(0,0,0,0.6);
+  display: none; align-items: flex-start; justify-content: center;
+  padding: 40px 16px; overflow-y: auto;
+}
+.match-modal.open { display: flex; }
+.match-modal-card {
+  background: var(--bg-2); border: 1px solid var(--line);
+  border-radius: 12px; max-width: 1100px; width: 100%;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+.match-modal-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 20px; border-bottom: 1px solid var(--line);
+}
+.match-modal-head h3 { margin: 0; }
+.match-modal-body { padding: 18px 20px 24px; }
+.event-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-bottom: 1px dashed var(--line);
+  font-size: 12px;
+}
+.event-row .ts { color: var(--muted); width: 50px; flex-shrink: 0; font-family: monospace; }
+.event-row.kill .ts { color: var(--accent); }
+.event-row.objective .ts { color: var(--accent-2); }
+.event-row.tower .ts { color: var(--warn); }
+.event-side-blue { color: #6ea8ff; }
+.event-side-red { color: #ff8b8b; }
+
 /* Glossary side panel */
 .glossary-panel {
   position: fixed; top: 0; right: 0; bottom: 0; width: 460px; max-width: 95vw;

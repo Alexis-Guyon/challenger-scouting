@@ -266,6 +266,7 @@ def list_players(
     residency: str | None = Query(default=None, description='e.g. "Europe", "Korea"'),
     country: str | None = Query(default=None, description='e.g. "France"'),
     pro_only: bool = Query(default=False),
+    rising_only: bool = Query(default=False, description="Only players tagged is_rising_star"),
     include_unresolved: bool = Query(default=False, description="Include stub players whose Riot name failed to resolve (shown as '(unknown)')"),
     db: Session = Depends(get_db),
 ):
@@ -296,6 +297,8 @@ def list_players(
 
     if pro_only:
         q = q.filter(PlayerMeta.is_pro == True)  # noqa: E712
+    if rising_only:
+        q = q.filter(PlayerAggregate.is_rising_star == True)  # noqa: E712
     if fa is True:
         q = q.filter(PlayerMeta.is_pro == True, (PlayerMeta.current_team == "") | (PlayerMeta.current_team.is_(None)), PlayerMeta.is_retired == False)  # noqa: E712
     if contract_within_days is not None:
@@ -343,6 +346,7 @@ def list_players(
             "css_score": round(a.css_score, 1),
             "percentile_rank": a.percentile_rank,
             "champion_pool_size": a.champion_pool_size,
+            "is_rising_star": bool(a.is_rising_star),
         })
         if len(out) >= limit:
             break

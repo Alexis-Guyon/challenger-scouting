@@ -173,6 +173,7 @@ function setView(name) {
   app.appendChild(tpl.content.cloneNode(true));
   if (name === 'leaderboard') initLeaderboard();
   if (name === 'watchlist') initWatchlist();
+  if (name === 'champions') initChampions();
   if (name === 'player') initPlayer();
   if (name === 'compare') initCompare();
   if (name === 'admin') initAdmin();
@@ -206,13 +207,13 @@ function smurfBadge(p) {
 }
 function proBadge(p) {
   if (!p.meta) return '<span class="muted" style="font-size:11px;">—</span>';
-  if (p.meta.is_retired) return '<span class="score-pill s-avg" title="retired">retired</span>';
-  if (p.meta.is_fa) return '<span class="score-pill s-elite" title="Free agent">FA</span>';
-  return '<span class="score-pill s-strong" title="rostered pro">pro</span>';
+  if (p.meta.is_retired) return '<span class="score-pill s-avg" title="retired">Retired</span>';
+  if (p.meta.is_fa) return '<span class="score-pill s-elite" title="Free Agent">FA</span>';
+  return '<span class="score-pill s-strong" title="rostered pro">PRO</span>';
 }
 function teamCell(p) {
   if (!p.meta) return '<span class="muted">—</span>';
-  if (p.meta.is_fa) return '<span class="muted" style="font-style:italic;">free agent</span>';
+  if (p.meta.is_fa) return '<span class="muted" style="font-style:italic;">Free Agent</span>';
   const name = p.meta.current_team || '';
   if (!name) return '<span class="muted">—</span>';
   const logo = p.meta.current_team_logo_url;
@@ -227,6 +228,11 @@ function teamCell(p) {
 function ageCell(p) {
   if (!p.meta || !p.meta.age) return '<span class="muted">—</span>';
   return p.meta.age;
+}
+function risingBadge(row) {
+  return row.is_rising_star
+    ? '<span class="score-pill s-elite" title="CSS up ≥6 pts over 3+ consecutive snapshots" style="margin-left:6px;">🚀 rising</span>'
+    : '';
 }
 
 /* ---------------- LEADERBOARD ---------------- */
@@ -325,7 +331,7 @@ async function loadLeaderboard() {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${_lbOffset + i + 1}</td>
-      <td><strong>${row.summoner_name || '(unknown)'}</strong> ${smurfBadge(row)}</td>
+      <td><strong>${row.summoner_name || '(unknown)'}</strong> ${smurfBadge(row)}${risingBadge(row)}</td>
       <td>${proBadge(row)}</td>
       <td>${teamCell(row)}</td>
       <td>${ageCell(row)}</td>
@@ -405,6 +411,96 @@ async function loadWatchlist() {
   );
 }
 function initWatchlist() { loadWatchlist(); }
+
+/* ---------------- CHAMPIONS ---------------- */
+async function loadChampions() {
+  const role = document.getElementById('ch-role').value;
+  const patch = document.getElementById('ch-patch').value;
+  const minGames = document.getElementById('ch-min').value || 20;
+  const params = new URLSearchParams();
+  if (role) params.set('role', role);
+  if (patch) params.set('patch', patch);
+  params.set('min_total_games', minGames);
+  const data = await API('/champions?' + params);
+
+  const tbody = document.querySelector('#ch-table tbody');
+  if (!data.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="muted" style="text-align:center;padding:30px;">No champions match these filters.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = data.slice(0, 200).map(c => `
+    <tr>
+      <td><strong>${c.champion_name}</strong></td>
+      <td><span class="role-tag">${c.role || '—'}</span></td>
+      <td>${c.patch || '—'}</td>
+      <td>${c.total_mains}</td>
+      <td>${c.total_games}</td>
+      <td>${c.winrate}%</td>
+      <td>${c.avg_kda}</td>
+      <td>${c.baselined ? `<span class="score-pill ${scoreClass(c.avg_champ_css)}">${c.avg_champ_css}</span>` : '<span class="muted">—</span>'}</td>
+      <td><button class="secondary view-champ" data-id="${c.champion_id}" data-role="${c.role}" data-name="${c.champion_name}">View top players</button></td>
+    </tr>
+  `).join('');
+  document.querySelectorAll('.view-champ').forEach(b =>
+    b.addEventListener('click', () => loadChampionDetail(b.dataset.id, b.dataset.role, b.dataset.name))
+  );
+}
+
+async function loadChampionDetail(championId, role, name) {
+  const detail = document.getElementById('ch-detail');
+  detail.innerHTML = `<div class="card"><h3>Loading top ${role} ${name}…</h3></div>`;
+  const params = new URLSearchParams();
+  if (role) params.set('role', role);
+  params.set('limit', 50);
+  params.set('min_games', 3);
+  const data = await API(`/champions/${championId}?` + params);
+  const items = data.items || [];
+
+  detail.innerHTML = `
+    <div class="card">
+      <h3>Top players on ${data.champion_name || name} ${role ? '· ' + role : ''}</h3>
+      <p class="muted" style="margin-top:0;font-size:12px;">Sorted by Champ-CSS (champion-specific score vs same-champion Challenger baseline).</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th><th>Summoner</th><th>Pro</th><th>Team</th><th>Tier</th><th>LP</th>
+              <th>Patch</th><th>Games</th><th>WR</th><th>KDA</th><th>Dmg %</th><th>Champ-CSS</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${items.map((p, i) => `
+              <tr>
+                <td>${i+1}</td>
+                <td><strong>${p.summoner_name||'(unknown)'}</strong></td>
+                <td>${p.meta ? '<span class="score-pill s-strong">pro</span>' : '<span class="muted">—</span>'}</td>
+                <td>${p.meta && p.meta.current_team_logo_url ? `<span class="team-cell"><img class="team-logo" src="${p.meta.current_team_logo_url}" onerror="this.style.display='none'"/> <span>${p.meta.current_team}</span></span>` : (p.meta && p.meta.current_team ? p.meta.current_team : '<span class="muted">—</span>')}</td>
+                <td><span class="role-tag">${p.tier || '—'}</span></td>
+                <td>${p.lp ?? '—'}</td>
+                <td>${p.patch || '—'}</td>
+                <td>${p.games}</td>
+                <td>${p.winrate}%</td>
+                <td>${p.avg_kda}</td>
+                <td>${(p.avg_dmg_share*100).toFixed(1)}%</td>
+                <td>${p.has_champion_baseline ? `<span class="score-pill ${scoreClass(p.champion_css)}">${p.champion_css}</span>` : '<span class="muted">—</span>'}</td>
+                <td><button class="secondary view-from-champ" data-puuid="${p.puuid}">View</button></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  document.querySelectorAll('.view-from-champ').forEach(b =>
+    b.addEventListener('click', () => { window._selectedPuuid = b.dataset.puuid; setView('player'); })
+  );
+}
+
+function initChampions() {
+  document.getElementById('ch-apply').addEventListener('click', loadChampions);
+  loadChampions();
+}
 
 /* ---------------- PLAYER ---------------- */
 function initPlayer() {
@@ -670,12 +766,12 @@ async function loadPlayer(puuid) {
         </table>
       </div>
       <div class="card">
-        <h3>Recent matches</h3>
+        <h3>Recent matches <span class="muted" style="font-size:11px;font-weight:400;">click any row to open the deep-dive</span></h3>
         <table>
           <thead><tr><th>Champ</th><th>Role</th><th>K/D/A</th><th>GD@15</th><th>Dmg %</th><th>VS</th><th>W</th></tr></thead>
           <tbody>
             ${data.recent_matches.slice(0,15).map(r => `
-              <tr>
+              <tr class="match-row" data-mid="${r.match_id}" style="cursor:pointer;">
                 <td>${r.champion_name}</td>
                 <td>${r.role}</td>
                 <td>${r.kills}/${r.deaths}/${r.assists}</td>
@@ -745,6 +841,11 @@ async function loadPlayer(puuid) {
   document.getElementById('profile-star').addEventListener('click', async (e) => {
     await toggleWatch(puuid, e.target);
   });
+
+  // Recent matches click → deep-dive modal
+  document.querySelectorAll('.match-row').forEach(tr =>
+    tr.addEventListener('click', () => openMatchModal(tr.dataset.mid))
+  );
 
   // Export PDF — switch to soloq tab first so the printed page has full content,
   // then trigger native browser print (user picks "Save as PDF" in dialog).
@@ -982,6 +1083,137 @@ function initAdmin() {
     }, 3000);
   });
 }
+
+/* ---------------- MATCH DEEP-DIVE MODAL ---------------- */
+let _matchChart = null;
+
+async function openMatchModal(matchId) {
+  const modal = document.getElementById('match-modal');
+  const body = document.getElementById('match-modal-body');
+  const title = document.getElementById('match-modal-title');
+  modal.classList.add('open');
+  title.textContent = `Match deep-dive · ${matchId}`;
+  body.innerHTML = '<p class="muted">Loading timeline from Riot…</p>';
+  try {
+    const data = await API(`/matches/${matchId}/timeline`);
+    renderMatchModal(data);
+  } catch (e) {
+    body.innerHTML = `<p class="muted">Failed to load: ${e.message}</p>`;
+  }
+}
+
+function renderMatchModal(data) {
+  const body = document.getElementById('match-modal-body');
+  const blueSide = data.participants.filter(p => p.team_id === 100);
+  const redSide  = data.participants.filter(p => p.team_id === 200);
+  const winner = data.blue_win ? 'Blue' : 'Red';
+
+  body.innerHTML = `
+    <div class="muted" style="margin-bottom:12px;font-size:13px;">
+      Patch ${data.patch || '?'} · ${data.duration_min} min · Winner: <strong style="color:${data.blue_win ? '#6ea8ff' : '#ff8b8b'}">${winner}</strong>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <h4 class="muted-h4">🔵 Blue side ${data.blue_win ? '(WIN)' : ''}</h4>
+        ${blueSide.map(p => `
+          <div class="stat-row">
+            <span class="label">${p.role || ''} · ${p.champion}</span>
+            <span class="value">${p.summoner_name || '?'} · ${p.kills}/${p.deaths}/${p.assists}</span>
+          </div>
+        `).join('')}
+      </div>
+      <div class="card">
+        <h4 class="muted-h4">🔴 Red side ${!data.blue_win ? '(WIN)' : ''}</h4>
+        ${redSide.map(p => `
+          <div class="stat-row">
+            <span class="label">${p.role || ''} · ${p.champion}</span>
+            <span class="value">${p.summoner_name || '?'} · ${p.kills}/${p.deaths}/${p.assists}</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <h4 class="muted-h4">Gold curves (totals per team)</h4>
+      <canvas id="match-gold-chart" height="220"></canvas>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <h4 class="muted-h4">Events timeline</h4>
+      <div style="max-height:300px;overflow-y:auto;">
+        ${data.events.map(ev => renderEvent(ev)).join('')}
+      </div>
+    </div>
+  `;
+
+  // Compute per-team gold sum at each minute
+  const minutes = data.gold_curves[0]?.minutes || [];
+  const blueGold = minutes.map(() => 0);
+  const redGold  = minutes.map(() => 0);
+  data.gold_curves.forEach(gc => {
+    const arr = gc.team_id === 100 ? blueGold : redGold;
+    gc.gold.forEach((g, i) => { arr[i] += g; });
+  });
+
+  const goldDiff = minutes.map((_, i) => blueGold[i] - redGold[i]);
+
+  if (_matchChart) _matchChart.destroy();
+  _matchChart = new Chart(document.getElementById('match-gold-chart'), {
+    type: 'line',
+    data: {
+      labels: minutes.map(m => m + 'm'),
+      datasets: [
+        { label: 'Blue gold', data: blueGold, borderColor: '#6ea8ff', backgroundColor: 'rgba(110,168,255,0.10)', fill: false, tension: 0.2 },
+        { label: 'Red gold',  data: redGold,  borderColor: '#ff8b8b', backgroundColor: 'rgba(255,139,139,0.10)', fill: false, tension: 0.2 },
+        { label: 'Blue lead', data: goldDiff, borderColor: '#f59e0b', borderDash: [4,4], yAxisID: 'y2', fill: false, tension: 0.2 },
+      ],
+    },
+    options: {
+      scales: {
+        x: { grid: { color: '#2a2e37' }, ticks: { color: '#8a8f99' } },
+        y: { grid: { color: '#2a2e37' }, ticks: { color: '#ebeced' }, title: { display: true, text: 'Total gold', color: '#8a8f99' } },
+        y2: { position: 'right', grid: { display: false }, ticks: { color: '#f59e0b' }, title: { display: true, text: 'Blue − Red', color: '#f59e0b' } },
+      },
+      plugins: { legend: { labels: { color: '#ebeced' } } },
+    },
+  });
+}
+
+function renderEvent(ev) {
+  const min = String(Math.floor(ev.ts / 60)).padStart(2, '0');
+  const sec = String(ev.ts % 60).padStart(2, '0');
+  const ts = `${min}:${sec}`;
+  const sideClass = ev.team_id === 100 ? 'event-side-blue' : (ev.team_id === 200 ? 'event-side-red' : '');
+  if (ev.type === 'kill') {
+    return `<div class="event-row kill"><span class="ts">${ts}</span><span>⚔️</span>
+      <span class="${sideClass}">${ev.killer || '?'}</span> <span class="muted">(${ev.killer_champion || '?'})</span>
+      killed <span>${ev.victim || '?'}</span> <span class="muted">(${ev.victim_champion || '?'})</span>
+      ${ev.assists.length ? `<span class="muted">— assists: ${ev.assists.join(', ')}</span>` : ''}
+    </div>`;
+  }
+  if (ev.type === 'objective') {
+    const what = ev.monster_subtype ? `${ev.monster_subtype} ${ev.subtype}` : ev.subtype;
+    return `<div class="event-row objective"><span class="ts">${ts}</span><span>🐉</span>
+      <span class="${sideClass}">${ev.killer || ev.team_id === 100 ? 'Blue' : 'Red'}</span> took <strong>${what}</strong>
+    </div>`;
+  }
+  if (ev.type === 'tower') {
+    return `<div class="event-row tower"><span class="ts">${ts}</span><span>🗼</span>
+      <span class="${ev.team_id === 100 ? 'event-side-red' : 'event-side-blue'}">${ev.team_id === 100 ? 'Red' : 'Blue'}</span> tower (${ev.lane || ev.tower_type || '?'}) destroyed
+    </div>`;
+  }
+  return '';
+}
+
+document.getElementById('match-modal-close').addEventListener('click', () => {
+  document.getElementById('match-modal').classList.remove('open');
+});
+document.getElementById('match-modal').addEventListener('click', (e) => {
+  if (e.target.id === 'match-modal') {
+    e.currentTarget.classList.remove('open');
+  }
+});
 
 /* ---------------- TOURNAMENT TAB ---------------- */
 async function loadTournamentTab(puuid) {

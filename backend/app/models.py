@@ -150,6 +150,7 @@ class PlayerAggregate(Base):
     css_score = Column(Float, default=0)
     css_raw = Column(Float, default=0)
     percentile_rank = Column(Float, default=0)
+    is_rising_star = Column(Boolean, default=False)
 
     player = relationship("Player", back_populates="aggregates")
 

@@ -338,7 +338,7 @@ def fetch_active_pros(residencies: Iterable[str] = ("Europe",)) -> list[dict]:
     return out
 
 
-def fetch_pros_by_name(names: Iterable[str], chunk_size: int = 10) -> list[dict]:
+def fetch_pros_by_name(names: Iterable[str], chunk_size: int = 5) -> list[dict]:
     """
     Targeted fetch from Cargo Players table.
 
@@ -398,7 +398,9 @@ def fetch_pros_by_name(names: Iterable[str], chunk_size: int = 10) -> list[dict]
                 seen_players.add(key)
                 out.append(r)
 
-        time.sleep(3.0)
+        # 6 s pacing — Fandom's bot-password Cargo quota is roughly 1 query
+        # per 6-10 s for newish accounts. Going faster trips MWException.
+        time.sleep(6.0)
 
     logger.info(
         "Leaguepedia: fetched %d profiles targeted from %d names",

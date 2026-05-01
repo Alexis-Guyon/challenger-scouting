@@ -130,11 +130,11 @@ def run_alerts_check(db: Session) -> int:
     """
     Compare current state to the previous snapshot, emit alerts, save a new
     snapshot. Returns the count of alerts sent.
-    """
-    if not (settings.discord_webhook_url or settings.slack_webhook_url):
-        logger.info("alerts: no webhook configured, skipping")
-        return 0
 
+    Snapshots are saved REGARDLESS of webhook configuration — they're needed
+    by the rising-star detector even when no webhook is set up.
+    """
+    has_webhook = bool(settings.discord_webhook_url or settings.slack_webhook_url)
     sent = 0
     now = datetime.now(timezone.utc)
 
@@ -211,35 +211,38 @@ def run_alerts_check(db: Session) -> int:
         link = _player_link(puuid)
         return f"• **{name}** — {role} CSS **{css:.1f}**{extra}\n  <{link}>"
 
-    if rising:
-        rising.sort(key=lambda x: x[0].css_score - x[1], reverse=True)
-        lines = [
-            player_line(a.puuid, a.css_score, a.role, f" (was {prev:.1f}, +{a.css_score - prev:+.1f})")
-            for a, prev in rising[:8]
-        ]
-        msg = f"🚀 **Rising stars** ({len(rising)}):\n" + "\n".join(lines)
-        sent += _send(msg)
+    if has_webhook:
+        if rising:
+            rising.sort(key=lambda x: x[0].css_score - x[1], reverse=True)
+            lines = [
+                player_line(a.puuid, a.css_score, a.role, f" (was {prev:.1f}, +{a.css_score - prev:+.1f})")
+                for a, prev in rising[:8]
+            ]
+            msg = f"🚀 **Rising stars** ({len(rising)}):\n" + "\n".join(lines)
+            sent += _send(msg)
 
-    if elite:
-        elite.sort(key=lambda a: a.css_score, reverse=True)
-        lines = [player_line(a.puuid, a.css_score, a.role, " — first time crossing elite") for a in elite[:8]]
-        msg = f"⭐ **Crossed CSS {settings.alert_css_min:.0f}** ({len(elite)}):\n" + "\n".join(lines)
-        sent += _send(msg)
+        if elite:
+            elite.sort(key=lambda a: a.css_score, reverse=True)
+            lines = [player_line(a.puuid, a.css_score, a.role, " — first time crossing elite") for a in elite[:8]]
+            msg = f"⭐ **Crossed CSS {settings.alert_css_min:.0f}** ({len(elite)}):\n" + "\n".join(lines)
+            sent += _send(msg)
 
-    if watch_deltas:
-        watch_deltas.sort(key=lambda x: abs(x[0].css_score - x[1]), reverse=True)
-        lines = [
-            player_line(a.puuid, a.css_score, a.role, f" (Δ {a.css_score - prev:+.1f} from {prev:.1f})")
-            for a, prev in watch_deltas[:10]
-        ]
-        msg = f"👁️ **Watchlist deltas** ({len(watch_deltas)}):\n" + "\n".join(lines)
-        sent += _send(msg)
+        if watch_deltas:
+            watch_deltas.sort(key=lambda x: abs(x[0].css_score - x[1]), reverse=True)
+            lines = [
+                player_line(a.puuid, a.css_score, a.role, f" (Δ {a.css_score - prev:+.1f} from {prev:.1f})")
+                for a, prev in watch_deltas[:10]
+            ]
+            msg = f"👁️ **Watchlist deltas** ({len(watch_deltas)}):\n" + "\n".join(lines)
+            sent += _send(msg)
 
-    if win_streaks:
-        win_streaks.sort(key=lambda x: x[2], reverse=True)
-        lines = [player_line(p.puuid, agg.css_score, agg.role, f" — {streak}W streak") for p, agg, streak in win_streaks[:6]]
-        msg = f"🔥 **Hot win streaks** ({len(win_streaks)}):\n" + "\n".join(lines)
-        sent += _send(msg)
+        if win_streaks:
+            win_streaks.sort(key=lambda x: x[2], reverse=True)
+            lines = [player_line(p.puuid, agg.css_score, agg.role, f" — {streak}W streak") for p, agg, streak in win_streaks[:6]]
+            msg = f"🔥 **Hot win streaks** ({len(win_streaks)}):\n" + "\n".join(lines)
+            sent += _send(msg)
+    else:
+        logger.info("alerts: webhooks not configured — skipping notifications, but saving snapshot for rising-star detector")
 
     # Persist snapshots after sending (so a webhook failure doesn't lose history)
     db.bulk_save_objects(new_snapshots)

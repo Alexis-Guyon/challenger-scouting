@@ -41,6 +41,8 @@ NEW_COLUMNS = [
     ("player_meta", "lolpros_profile_json", "TEXT"),
     # Leaguepedia headshot (Special:FilePath URL)
     ("player_meta", "player_image_url", "VARCHAR"),
+    # Rising-star tag (sustained CSS uptrend across N snapshots)
+    ("player_aggregates", "is_rising_star", "BOOLEAN DEFAULT 0"),
 ]
 
 

@@ -83,6 +83,16 @@ def _run_pipeline_job(
             _jobs[job_id]["step"] = "champion_scoring"
             score_all_champions(db)
 
+            # Detect rising stars BEFORE alerts so the alerts engine can
+            # surface fresh tags. The detector reads the CSSSnapshot history
+            # which `run_alerts_check` will then extend with the current cycle.
+            _jobs[job_id]["step"] = "rising_stars"
+            try:
+                from ..services.rising_stars import annotate_rising_stars_in_aggregates
+                _jobs[job_id]["rising_stars"] = annotate_rising_stars_in_aggregates(db)
+            except Exception as exc:
+                logger.warning("rising stars annotation failed: %s", exc)
+
             # Run alerts engine: detect deltas vs previous snapshot
             if send_alerts:
                 _jobs[job_id]["step"] = "alerts"

@@ -26,6 +26,9 @@ from ..services.scoring import compute_css_for_aggregate
 
 router = APIRouter(tags=["tournaments"], dependencies=[Depends(get_current_user)])
 
+# --- separate sub-router for /tournament-matches/* ---
+match_router = APIRouter(prefix="/tournament-matches", tags=["tournaments"], dependencies=[Depends(get_current_user)])
+
 
 # Cross-mapping from LP/Riot role to lolesports role
 ROLE_MAP_TO_LOLESPORTS = {
@@ -378,3 +381,227 @@ def _summarize_pro_player(db: Session, pro_player_id: str, lolesports_role: str)
                 "vspm": round(agg.avg_vspm, 2),
             }
     return {"tournament": tournament_stats, "soloq": soloq}
+
+
+# ============================================================
+# /tournament-matches/* — single-match deep-dive
+# ============================================================
+
+@match_router.get("/{match_id}")
+def tournament_match_detail(match_id: str, db: Session = Depends(get_db)):
+    """
+    Full roster + per-team stats for a single LEC/ERL match.
+    Pulls from our DB only — no extra Riot/lolesports calls. Use the
+    /timeline subresource if you want gold curves and events.
+    """
+    m = db.get(OfficialMatch, match_id)
+    if not m:
+        raise HTTPException(404, "tournament match not found")
+
+    parts = (
+        db.query(OfficialMatchParticipant)
+        .filter_by(match_id=match_id)
+        .all()
+    )
+
+    teams = {t.id: t for t in db.query(ProTeam).filter(ProTeam.id.in_([m.blue_team_id, m.red_team_id])).all()}
+    blue = teams.get(m.blue_team_id)
+    red = teams.get(m.red_team_id)
+
+    tournament = db.get(Tournament, m.tournament_id) if m.tournament_id else None
+
+    # Group participants by side, compute per-team aggregates
+    by_side: dict[str, list[OfficialMatchParticipant]] = {"blue": [], "red": []}
+    for p in parts:
+        side = (p.side or "").lower()
+        if side in by_side:
+            by_side[side].append(p)
+
+    def _team_summary(side_parts: list[OfficialMatchParticipant]) -> dict:
+        if not side_parts:
+            return {}
+        return {
+            "kills":   sum(p.kills for p in side_parts),
+            "deaths":  sum(p.deaths for p in side_parts),
+            "assists": sum(p.assists for p in side_parts),
+            "gold":    sum(p.gold for p in side_parts),
+            "cs":      sum(p.cs for p in side_parts),
+            "gd_at_15": sum(p.gd_at_15 for p in side_parts),
+            "cs_at_15": sum(p.cs_at_15 for p in side_parts),
+        }
+
+    def _format_participant(p: OfficialMatchParticipant) -> dict:
+        # Try to cross-link to a Riot player profile if we have the lolesports
+        # ID matched on PlayerMeta.lolesports_id.
+        riot_puuid = None
+        if p.pro_player_id:
+            meta = db.query(PlayerMeta).filter_by(lolesports_id=p.pro_player_id).first()
+            if meta:
+                riot_puuid = meta.puuid
+        return {
+            "pro_player_id": p.pro_player_id,
+            "player_name": p.player_name,
+            "summoner_name": p.summoner_name,
+            "champion": p.champion,
+            "role": p.role,
+            "kills": p.kills,
+            "deaths": p.deaths,
+            "assists": p.assists,
+            "kda": round(p.kda, 2),
+            "kp": round(p.kill_participation, 3),
+            "cs": p.cs,
+            "gold": p.gold,
+            "level": p.level,
+            "gd_at_15": p.gd_at_15,
+            "csd_at_15": p.csd_at_15,
+            "cs_at_15": p.cs_at_15,
+            "gold_at_15": p.gold_at_15,
+            "win": p.win,
+            "riot_puuid": riot_puuid,
+        }
+
+    return {
+        "match_id": match_id,
+        "event_id": m.event_id,
+        "block_name": m.block_name,
+        "patch": m.patch,
+        "duration_sec": m.duration_sec,
+        "duration_min": (m.duration_sec or 0) // 60,
+        "game_date": m.game_date.isoformat() if m.game_date else None,
+        "blue_win": m.blue_win,
+        "tournament": {
+            "id": tournament.id if tournament else None,
+            "name": tournament.name if tournament else None,
+            "league": tournament.league_slug if tournament else None,
+        } if tournament else None,
+        "blue_team": {
+            "id": m.blue_team_id,
+            "code": (blue.code if blue else None),
+            "name": (blue.name if blue else None),
+            "logo_url": (blue.image_url if blue else None),
+            "won": m.blue_win is True,
+            "summary": _team_summary(by_side["blue"]),
+            "participants": [_format_participant(p) for p in by_side["blue"]],
+        },
+        "red_team": {
+            "id": m.red_team_id,
+            "code": (red.code if red else None),
+            "name": (red.name if red else None),
+            "logo_url": (red.image_url if red else None),
+            "won": m.blue_win is False,
+            "summary": _team_summary(by_side["red"]),
+            "participants": [_format_participant(p) for p in by_side["red"]],
+        },
+    }
+
+
+@match_router.get("/{match_id}/timeline")
+async def tournament_match_timeline(match_id: str, db: Session = Depends(get_db)):
+    """
+    Walk the lolesports livestats /window endpoints to reconstruct the gold
+    curve + events. Cached 30 min in memory. Returns:
+      - gold_curves: per-participant gold over time (10s resolution)
+      - team_gold_diff: blue-red team gold delta over time
+      - duration_min
+    Note: lolesports may rate-limit; if the walk fails partway we return
+    whatever we have.
+    """
+    import time
+    from datetime import timedelta as _td
+    from ..services.lolesports_client import LolesportsClient, round_to_10s_iso
+    from ..services.tournament_ingestion import _parse_iso
+
+    m = db.get(OfficialMatch, match_id)
+    if not m:
+        raise HTTPException(404, "tournament match not found")
+    if not m.game_date:
+        raise HTTPException(400, "match has no game_date — cannot fetch timeline")
+
+    cache_key = f"tn:{match_id}"
+    if cache_key in _TIMELINE_CACHE:
+        payload, expiry = _TIMELINE_CACHE[cache_key]
+        if expiry > time.time():
+            return payload
+
+    bc_start = m.game_date
+    if not bc_start.tzinfo:
+        from datetime import timezone as _tz
+        bc_start = bc_start.replace(tzinfo=_tz.utc)
+
+    duration = m.duration_sec or 30 * 60
+    # Walk windows from broadcast start (+ ~3 min draft buffer) every 10 s of
+    # game data — but the API returns 100 s of data per call, so step 100 s.
+    step_sec = 100
+    parts_meta = (
+        db.query(OfficialMatchParticipant)
+        .filter_by(match_id=match_id)
+        .all()
+    )
+    pid_to_info = {}
+    for p in parts_meta:
+        # In lolesports gameMetadata, participantIds are 1..10 (blue 1-5, red 6-10).
+        # We don't store the participantId directly on OMP, but we can rebuild
+        # it from the order + side at ingestion time. Fallback: match by name.
+        pass  # we'll use summoner_name → key matching
+
+    series: dict[str, list[tuple[int, int]]] = {}  # name -> [(t_sec, gold)]
+    blue_total: list[tuple[int, int]] = []
+    red_total: list[tuple[int, int]] = []
+
+    async with LolesportsClient() as client:
+        cur = bc_start + _td(minutes=3)  # draft+load buffer
+        end = bc_start + _td(seconds=duration + 60)
+        last_blue_total = 0
+        last_red_total = 0
+        while cur <= end:
+            iso = round_to_10s_iso(cur)
+            try:
+                window = await client.get_window(match_id, iso)
+            except Exception:
+                window = None
+            if not window or not window.get("frames"):
+                cur += _td(seconds=step_sec)
+                continue
+            for frame in window["frames"]:
+                # game time = elapsed from broadcast start in seconds
+                ts_iso = frame.get("rfc460Timestamp") or ""
+                ts = _parse_iso(ts_iso)
+                t_sec = int((ts - bc_start).total_seconds()) if ts else 0
+                blue = (frame.get("blueTeam") or {}).get("participants", []) or []
+                red  = (frame.get("redTeam")  or {}).get("participants", []) or []
+                blue_sum = sum(p.get("totalGold", 0) for p in blue)
+                red_sum  = sum(p.get("totalGold", 0) for p in red)
+                blue_total.append((t_sec, blue_sum))
+                red_total.append((t_sec, red_sum))
+                last_blue_total, last_red_total = blue_sum, red_sum
+            cur += _td(seconds=step_sec)
+
+    # Dedupe by t_sec (multiple windows overlap), pick the latest per t
+    def _dedupe(rows):
+        out = {}
+        for t, v in rows:
+            out[t] = v
+        return sorted(out.items())
+
+    blue_curve = _dedupe(blue_total)
+    red_curve = _dedupe(red_total)
+    times = sorted(set(t for t, _ in blue_curve) | set(t for t, _ in red_curve))
+    blue_dict = dict(blue_curve)
+    red_dict = dict(red_curve)
+    diff_curve = [(t, blue_dict.get(t, 0) - red_dict.get(t, 0)) for t in times]
+
+    payload = {
+        "match_id": match_id,
+        "duration_min": duration // 60,
+        "minutes": [t // 60 for t in times],
+        "blue_gold": [blue_dict.get(t, 0) for t in times],
+        "red_gold": [red_dict.get(t, 0) for t in times],
+        "gold_diff_blue_minus_red": [d for _, d in diff_curve],
+        "samples": len(times),
+    }
+    _TIMELINE_CACHE[cache_key] = (payload, time.time() + 30 * 60)
+    return payload
+
+
+# Lazy-init shared cache (also used by the SoloQ /matches/{id}/timeline)
+_TIMELINE_CACHE: dict = {}

@@ -1521,12 +1521,12 @@ async function loadTournamentTab(puuid) {
         </table>
       </div>
       <div class="card">
-        <h3>Recent tournament matches</h3>
+        <h3>Recent tournament matches <span class="muted" style="font-size:11px;font-weight:400;">click any row for the full deep-dive</span></h3>
         <table>
           <thead><tr><th>Date</th><th>League</th><th>Block</th><th>Champ</th><th>K/D/A</th><th>GD@15</th><th>W</th></tr></thead>
           <tbody>
             ${(data.recent_matches||[]).map(r => `
-              <tr>
+              <tr class="tn-match-row" data-mid="${r.match_id}" style="cursor:pointer;">
                 <td>${r.game_date ? new Date(r.game_date).toLocaleDateString() : '—'}</td>
                 <td>${(r.league_slug||'').toUpperCase()}</td>
                 <td>${r.block_name||''}</td>
@@ -1540,6 +1540,154 @@ async function loadTournamentTab(puuid) {
       </div>
     </div>
   `;
+
+  // Attach the click handler now that the rows exist in the DOM
+  root.querySelectorAll('.tn-match-row').forEach(tr =>
+    tr.addEventListener('click', () => openTournamentMatchModal(tr.dataset.mid))
+  );
+}
+
+/* ---------------- TOURNAMENT MATCH MODAL ---------------- */
+let _tnGoldChart = null;
+
+async function openTournamentMatchModal(matchId) {
+  // We reuse the match-modal element (same one used by SoloQ deep-dive)
+  const modal = document.getElementById('match-modal');
+  const body = document.getElementById('match-modal-body');
+  const title = document.getElementById('match-modal-title');
+  modal.classList.add('open');
+  title.textContent = `Tournament match · ${matchId}`;
+  body.innerHTML = '<p class="muted">Loading match details…</p>';
+  try {
+    const data = await API(`/tournament-matches/${matchId}`);
+    renderTournamentMatchModal(data, matchId);
+  } catch (e) {
+    body.innerHTML = `<p class="muted">Failed to load: ${e.message}</p>`;
+  }
+}
+
+function renderTournamentMatchModal(data, matchId) {
+  const body = document.getElementById('match-modal-body');
+  const blue = data.blue_team || {};
+  const red = data.red_team || {};
+
+  function teamHeader(t, sideColor) {
+    return `
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+        ${t.logo_url ? `<img src="${t.logo_url}" style="width:32px;height:32px;object-fit:contain;" onerror="this.style.display='none'"/>` : ''}
+        <strong style="font-size:16px;color:${sideColor};">${t.code || '?'} <span style="font-weight:400;color:var(--muted);">${t.name || ''}</span></strong>
+        ${t.won ? '<span class="score-pill s-elite">WIN</span>' : ''}
+      </div>`;
+  }
+
+  function rosterRows(team) {
+    const parts = team.participants || [];
+    return parts.map(p => `
+      <tr ${p.riot_puuid ? `class="tn-roster-row" data-puuid="${p.riot_puuid}" style="cursor:pointer;"` : ''}>
+        <td><span class="role-tag">${(p.role || '?').toUpperCase().slice(0,3)}</span></td>
+        <td><strong>${p.player_name || '?'}</strong></td>
+        <td>${p.champion || ''}</td>
+        <td>${p.kills}/${p.deaths}/${p.assists}</td>
+        <td>${p.kda}</td>
+        <td>${(p.kp*100).toFixed(0)}%</td>
+        <td>${p.cs}</td>
+        <td>${(p.gold/1000).toFixed(1)}k</td>
+        <td class="${p.gd_at_15>=0?'delta-pos':'delta-neg'}">${p.gd_at_15 ?? '—'}</td>
+      </tr>
+    `).join('');
+  }
+
+  body.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:14px;flex-wrap:wrap;">
+      <div class="muted" style="font-size:13px;">
+        ${data.tournament ? `<strong>${(data.tournament.league||'').toUpperCase()}</strong> ${data.tournament.name||''} · ` : ''}
+        ${data.block_name ? data.block_name + ' · ' : ''}
+        ${data.game_date ? new Date(data.game_date).toLocaleDateString() : ''} ·
+        Patch ${data.patch || '?'} · ${data.duration_min} min
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button id="tn-match-timeline" class="export-btn" style="font-size:12px;padding:6px 12px;" title="Pull live gold curve from lolesports">📈 Load gold curve</button>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        ${teamHeader(blue, '#6ea8ff')}
+        <table>
+          <thead><tr><th>R</th><th>Player</th><th>Champ</th><th>K/D/A</th><th>KDA</th><th>KP</th><th>CS</th><th>Gold</th><th>GD@15</th></tr></thead>
+          <tbody>${rosterRows(blue)}</tbody>
+        </table>
+      </div>
+      <div class="card">
+        ${teamHeader(red, '#ff8b8b')}
+        <table>
+          <thead><tr><th>R</th><th>Player</th><th>Champ</th><th>K/D/A</th><th>KDA</th><th>KP</th><th>CS</th><th>Gold</th><th>GD@15</th></tr></thead>
+          <tbody>${rosterRows(red)}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" id="tn-gold-card" style="display:none;margin-top:14px;">
+      <h4 class="muted-h4">Gold curves</h4>
+      <canvas id="tn-gold-chart" height="200"></canvas>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <h4 class="muted-h4">Team summary</h4>
+      <table>
+        <thead><tr><th></th><th>Kills</th><th>Deaths</th><th>Assists</th><th>Gold</th><th>CS</th><th>GD@15 (sum)</th></tr></thead>
+        <tbody>
+          <tr><td><strong style="color:#6ea8ff;">${blue.code||'Blue'}</strong></td><td>${blue.summary?.kills||0}</td><td>${blue.summary?.deaths||0}</td><td>${blue.summary?.assists||0}</td><td>${((blue.summary?.gold||0)/1000).toFixed(1)}k</td><td>${blue.summary?.cs||0}</td><td>${blue.summary?.gd_at_15||0}</td></tr>
+          <tr><td><strong style="color:#ff8b8b;">${red.code||'Red'}</strong></td><td>${red.summary?.kills||0}</td><td>${red.summary?.deaths||0}</td><td>${red.summary?.assists||0}</td><td>${((red.summary?.gold||0)/1000).toFixed(1)}k</td><td>${red.summary?.cs||0}</td><td>${red.summary?.gd_at_15||0}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  // Click on a participant row → navigate to that player's profile (if linked)
+  body.querySelectorAll('.tn-roster-row').forEach(tr =>
+    tr.addEventListener('click', () => {
+      window._selectedPuuid = tr.dataset.puuid;
+      document.getElementById('match-modal').classList.remove('open');
+      setView('player');
+    })
+  );
+
+  // Optional: pull the gold curve from lolesports
+  document.getElementById('tn-match-timeline').addEventListener('click', async () => {
+    const card = document.getElementById('tn-gold-card');
+    card.style.display = 'block';
+    const placeholder = card.querySelector('h4').nextSibling;
+    try {
+      const tl = await API(`/tournament-matches/${matchId}/timeline`);
+      if (!tl.samples) {
+        card.innerHTML = '<h4 class="muted-h4">Gold curves</h4><p class="muted">No timeline data available — lolesports may have purged old games.</p>';
+        return;
+      }
+      if (_tnGoldChart) _tnGoldChart.destroy();
+      _tnGoldChart = new Chart(document.getElementById('tn-gold-chart'), {
+        type: 'line',
+        data: {
+          labels: tl.minutes.map(m => m + 'm'),
+          datasets: [
+            { label: 'Blue gold', data: tl.blue_gold, borderColor: '#6ea8ff', fill: false, tension: 0.2 },
+            { label: 'Red gold',  data: tl.red_gold,  borderColor: '#ff8b8b', fill: false, tension: 0.2 },
+            { label: 'Blue lead', data: tl.gold_diff_blue_minus_red, borderColor: '#f59e0b', borderDash: [4,4], yAxisID: 'y2', fill: false, tension: 0.2 },
+          ],
+        },
+        options: {
+          scales: {
+            x: { grid:{color:'#2a2e37'}, ticks:{color:'#8a8f99'} },
+            y: { grid:{color:'#2a2e37'}, ticks:{color:'#ebeced'}, title:{display:true,text:'Total gold',color:'#8a8f99'} },
+            y2: { position: 'right', grid:{display:false}, ticks:{color:'#f59e0b'}, title:{display:true,text:'Blue − Red',color:'#f59e0b'} },
+          },
+          plugins: { legend: { labels: { color: '#ebeced' } } },
+        },
+      });
+    } catch (e) {
+      card.innerHTML = `<h4 class="muted-h4">Gold curves</h4><p class="muted">Failed to load: ${e.message}</p>`;
+    }
+  });
 }
 
 /* ---------------- ROSTER COMPARE TAB ---------------- */

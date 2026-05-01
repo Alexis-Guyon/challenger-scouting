@@ -118,7 +118,7 @@ def _run_pipeline_job(
 @router.post("/ingest")
 def start_ingest(
     background: BackgroundTasks,
-    player_limit: int = Query(default=20, ge=1, le=400),
+    player_limit: int = Query(default=20, ge=1, le=2000),
     matches_per_player: int = Query(default=20, ge=1, le=100),
     tiers: str = Query(
         default="challenger",

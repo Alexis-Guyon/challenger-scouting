@@ -436,6 +436,28 @@ const SOCIAL_ICONS = {
   sheep:      { label: 'Sheep',       url: u => null },
 };
 
+// Profile icon CDN — Community Dragon serves all icons by ID without needing a patch version
+function profileIconUrl(iconId) {
+  if (!iconId) return null;
+  return `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/profile-icons/${iconId}.jpg`;
+}
+
+function flagEmoji(country) {
+  if (!country || country.length !== 2) return '';
+  const code = country.toUpperCase();
+  const A = 0x1F1E6;
+  return String.fromCodePoint(A + code.charCodeAt(0) - 65) + String.fromCodePoint(A + code.charCodeAt(1) - 65);
+}
+
+function renderRank(rank) {
+  if (!rank) return '<span class="muted">—</span>';
+  const tier = (rank.tier||'').replace(/^\d+_/, '');
+  const div = rank.division || '';
+  const lp = rank.league_points ?? 0;
+  const wl = (rank.wins != null && rank.losses != null) ? ` (${rank.wins}W / ${rank.losses}L)` : '';
+  return `<strong>${tier.toUpperCase()} ${div}</strong> · ${lp} LP${wl}`;
+}
+
 function renderProIdentity(meta) {
   const social = meta.social_media || {};
   const links = Object.entries(social)
@@ -450,18 +472,33 @@ function renderProIdentity(meta) {
     });
 
   const prev = (meta.previous_teams || []).slice(0, 8);
-  const peak = meta.peak_rank;
-  const peakStr = peak
-    ? `${(peak.tier||'').replace(/^\d+_/, '').toUpperCase()} ${peak.division || ''} · ${peak.league_points ?? 0} LP (${peak.wins}W/${peak.losses}L)`
-    : null;
+  const accounts = meta.accounts || [];
+  const primaryAcc = accounts[0];
+  const iconUrl = primaryAcc ? profileIconUrl(primaryAcc.profile_icon_id) : null;
 
   return `
-    <div class="card">
-      <h3>Pro identity</h3>
-      <div class="grid-3" style="gap:18px;">
+    <div class="card pro-identity">
+      <div class="pro-identity-header">
+        ${iconUrl ? `<img class="pro-photo" src="${iconUrl}" onerror="this.style.display='none'" alt="${meta.leaguepedia_id||''}"/>` : '<div class="pro-photo placeholder">?</div>'}
+        <div style="flex:1">
+          <h3 style="margin:0 0 4px;font-size:20px;">${meta.leaguepedia_id || meta.lolpros_slug || '?'} ${flagEmoji(meta.country)}</h3>
+          <div class="muted" style="font-size:12px;">
+            ${meta.lp_role ? `${meta.lp_role} · ` : ''}
+            ${meta.current_team ? meta.current_team : '<em>Free agent</em>'}
+            ${meta.in_game ? ' · <span class="score-pill s-elite" title="Currently rostered as a player">in game</span>' : ''}
+          </div>
+          ${(meta.other_countries || []).length ? `
+            <div class="muted" style="font-size:11px;margin-top:4px;">
+              Eligibility: ${[meta.country, ...(meta.other_countries||[])].filter(Boolean).map(c => flagEmoji(c) + ' ' + c).join(' · ')}
+            </div>` : ''}
+        </div>
+        ${meta.lolpros_url ? `<a href="${meta.lolpros_url}" target="_blank" rel="noopener" class="lolpros-link" title="View on Lolpros">Lolpros ↗</a>` : ''}
+      </div>
+
+      <div class="grid-3 pro-identity-body">
         <div>
           <h4 class="muted-h4">Career path</h4>
-          ${prev.length === 0 ? '<p class="muted">No prior teams on record.</p>' : `
+          ${prev.length === 0 ? '<p class="muted" style="font-size:12px;">No prior teams on record.</p>' : `
           <div class="team-history">
             ${prev.map(pt => `
               <div class="team-history-row">
@@ -474,22 +511,58 @@ function renderProIdentity(meta) {
             `).join('')}
           </div>`}
         </div>
+
         <div>
           <h4 class="muted-h4">Social media</h4>
-          ${links.length === 0 ? '<p class="muted">No public social links on Lolpros.</p>' : `<div class="social-list">${links.join('')}</div>`}
-          ${meta.lolpros_url ? `<p style="margin-top:12px;"><a href="${meta.lolpros_url}" target="_blank" rel="noopener" style="color:var(--accent);font-size:12px;">View full profile on Lolpros ↗</a></p>` : ''}
+          ${links.length === 0 ? '<p class="muted" style="font-size:12px;">No public social links.</p>' : `<div class="social-list">${links.join('')}</div>`}
         </div>
+
         <div>
-          <h4 class="muted-h4">Career rank highlights</h4>
-          ${peakStr ? `
-          <div class="stat-row"><span class="label">Peak rank</span><span class="value">${peakStr}</span></div>` : ''}
-          ${meta.country ? `<div class="stat-row"><span class="label">Country</span><span class="value">${meta.country}</span></div>` : ''}
-          ${(meta.other_countries || []).length ? `<div class="stat-row"><span class="label">Eligibility</span><span class="value">${meta.other_countries.join(', ')}</span></div>` : ''}
+          <h4 class="muted-h4">Personal & contract</h4>
           ${meta.age ? `<div class="stat-row"><span class="label">Age</span><span class="value">${meta.age}</span></div>` : ''}
-          ${meta.contract_end ? `<div class="stat-row"><span class="label">Contract ends</span><span class="value">${meta.contract_end}</span></div>` : ''}
-          ${meta.lp_role ? `<div class="stat-row"><span class="label">Role (LP)</span><span class="value">${meta.lp_role}</span></div>` : ''}
+          ${meta.country ? `<div class="stat-row"><span class="label">Nationality</span><span class="value">${flagEmoji(meta.country)} ${meta.country}</span></div>` : ''}
+          ${meta.residency ? `<div class="stat-row"><span class="label">Residency</span><span class="value">${meta.residency}</span></div>` : ''}
+          ${meta.contract_end
+            ? `<div class="stat-row"><span class="label">Contract ends</span><span class="value">${meta.contract_end}</span></div>`
+            : `<div class="stat-row"><span class="label">Contract end</span><span class="value muted" title="Lolpros doesn't expose contract dates publicly. Run Sync Leaguepedia for cases where this is in their wiki.">unknown</span></div>`}
+          ${meta.score ? `<div class="stat-row" title="Lolpros' internal MMR score (peak)"><span class="label">Lolpros score</span><span class="value">${meta.score}</span></div>` : ''}
         </div>
       </div>
+
+      ${accounts.length ? `
+      <div class="pro-identity-accounts">
+        <h4 class="muted-h4" style="margin-bottom:8px;">Tracked accounts (${accounts.length})</h4>
+        <div class="account-grid">
+          ${accounts.map(acc => `
+            <div class="account-card">
+              <div class="account-header">
+                <span class="role-tag">${acc.server || '?'}</span>
+                <strong>${acc.summoner_name || (acc.gamename + (acc.tagline?'#'+acc.tagline:'')) || '?'}</strong>
+              </div>
+              <div class="stat-row" title="Current rank"><span class="label">Now</span><span class="value">${renderRank(acc.rank)}</span></div>
+              <div class="stat-row" title="All-time peak rank"><span class="label">Peak</span><span class="value">${renderRank(acc.peak)}</span></div>
+              ${(acc.summoner_names_history || []).length ? `
+              <div class="stat-row" title="Past Riot IDs Lolpros has tracked on this account">
+                <span class="label">Old IGNs</span>
+                <span class="value" style="font-size:11px;text-align:right;">${acc.summoner_names_history.slice(0,3).join(', ')}${acc.summoner_names_history.length>3?'…':''}</span>
+              </div>` : ''}
+            </div>
+          `).join('')}
+        </div>
+      </div>` : ''}
+
+      ${(meta.leagues || []).length ? `
+      <div style="margin-top:14px;">
+        <h4 class="muted-h4">Active leagues this season</h4>
+        <div class="league-row">
+          ${meta.leagues.map(lg => `
+            <div class="league-pill" title="${lg.name}">
+              ${lg.logo_url ? `<img src="${lg.logo_url}" class="league-logo" onerror="this.style.display='none'"/>` : ''}
+              <span>${lg.shorthand || lg.name || '?'}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>` : ''}
     </div>
   `;
 }

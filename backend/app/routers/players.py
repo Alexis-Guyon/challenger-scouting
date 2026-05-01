@@ -67,7 +67,33 @@ def _serialize_player(p: Player, db: Session) -> dict:
                 for pt in (profile or {}).get("previous_teams", []) or []
             ],
             "other_countries": (profile or {}).get("other_countries", []),
-            "peak_rank": ((profile or {}).get("league_player") or {}).get("peak"),
+            "score": ((profile or {}).get("league_player") or {}).get("score"),
+            "in_game": ((profile or {}).get("league_player") or {}).get("in_game"),
+            "accounts": [
+                {
+                    "server": acc.get("server"),
+                    "summoner_name": acc.get("summoner_name"),
+                    "gamename": acc.get("gamename"),
+                    "tagline": acc.get("tagline"),
+                    "profile_icon_id": acc.get("profile_icon_id"),
+                    "summoner_names_history": [
+                        sn.get("name") for sn in (acc.get("summoner_names") or [])
+                        if sn.get("name") and sn.get("name") != acc.get("summoner_name")
+                    ][:6],
+                    "rank": acc.get("rank"),
+                    "peak": acc.get("peak"),
+                }
+                for acc in ((profile or {}).get("league_player") or {}).get("accounts", []) or []
+            ],
+            "leagues": [
+                {
+                    "name": lg.get("name"),
+                    "shorthand": lg.get("shorthand"),
+                    "slug": lg.get("slug"),
+                    "logo_url": (lg.get("logo") or {}).get("url"),
+                }
+                for lg in (profile or {}).get("leagues", []) or []
+            ],
         }
     import json as _json
     smurf_signals = None

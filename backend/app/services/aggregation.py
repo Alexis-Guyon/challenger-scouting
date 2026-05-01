@@ -277,24 +277,25 @@ def compute_role_distributions(db: Session, min_games: int) -> dict:
     return out
 
 
-def compute_champion_distributions(db: Session, min_players_per_champion: int = 5,
+def compute_champion_distributions(db: Session, min_match_count: int = 5,
+                                    min_players_per_champion: int = 5,
                                     min_games_per_player: int = 3) -> dict:
     """
-    For each (patch, role, champion_id), compute mean/std of champion-level metrics
-    across the Challenger pool.
+    Build per-champion baselines for z-score scoring. Two passes:
 
-    A baseline is built when at least `min_players_per_champion` distinct
-    Challenger players each have ≥ `min_games_per_player` games on that champion
-    in that role+patch. Tuned to surface baselines on niche/non-meta champions
-    where the previous 10×5 threshold produced almost no coverage.
+    Pass A (player-aggregate based, statistically tight):
+      built from ChampionPool entries when at least `min_players_per_champion`
+      distinct Challenger players each have ≥ `min_games_per_player` games on
+      that (champ, role, patch). Uses player averages → smooth distributions.
+
+    Pass B (match-level fallback, covers niche/off-meta):
+      built from raw MatchParticipant rows for any (champ, role, patch) that
+      didn't qualify under Pass A. Threshold: `min_match_count` total games
+      seen anywhere in the DB. Game-level variance is wider than player-avg
+      variance, so z-scores from this baseline are slightly compressed (top
+      performers look slightly less elite). We accept that as the cost of
+      covering ~all champions instead of just the meta.
     """
-    cps = db.query(ChampionPool).filter(ChampionPool.games >= min_games_per_player).all()
-    by_prc: dict[tuple[str, str, int], list[ChampionPool]] = defaultdict(list)
-    for cp in cps:
-        if not cp.role:
-            continue
-        by_prc[(cp.patch, cp.role, cp.champion_id)].append(cp)
-
     metric_attr = {
         "kda": "avg_kda",
         "dmg_share": "avg_dmg_share",
@@ -304,11 +305,22 @@ def compute_champion_distributions(db: Session, min_players_per_champion: int = 
         "dpm": "avg_dpm",
     }
 
+    # ----- Pass A: player-aggregate level -----
+    cps = db.query(ChampionPool).filter(ChampionPool.games >= min_games_per_player).all()
+    by_prc_a: dict[tuple[str, str, int], list[ChampionPool]] = defaultdict(list)
+    for cp in cps:
+        if not cp.role:
+            continue
+        by_prc_a[(cp.patch, cp.role, cp.champion_id)].append(cp)
+
     db.query(ChampionDistribution).delete()
     out: dict[tuple, tuple] = {}
-    for (patch, role, cid), pool in by_prc.items():
+    qualified_a: set[tuple[str, str, int]] = set()
+
+    for (patch, role, cid), pool in by_prc_a.items():
         if len(pool) < min_players_per_champion:
             continue
+        qualified_a.add((patch, role, cid))
         for metric, attr in metric_attr.items():
             xs = [getattr(cp, attr) for cp in pool]
             mu = _safe_mean(xs)
@@ -318,7 +330,48 @@ def compute_champion_distributions(db: Session, min_players_per_champion: int = 
                 mean=mu, std=sd, n_samples=len(xs),
             ))
             out[(patch, role, cid, metric)] = (mu, sd, len(xs))
+
+    # ----- Pass B: match-level fallback for everything else -----
+    by_prc_b: dict[tuple[str, str, int], list[dict]] = defaultdict(list)
+    rows = (
+        db.query(MatchParticipant, Match)
+        .join(Match, MatchParticipant.match_id == Match.match_id)
+        .all()
+    )
+    for mp, m in rows:
+        if not mp.role or not mp.champion_id or not m.patch:
+            continue
+        key = (m.patch, mp.role, mp.champion_id)
+        if key in qualified_a:
+            continue  # Pass A already covered this combo with tighter stats
+        dur_min = max(m.game_duration_sec / 60.0, 1.0) if m.game_duration_sec else 30.0
+        by_prc_b[key].append({
+            "kda": mp.kda,
+            "dmg_share": mp.damage_share,
+            "kp": mp.kill_participation,
+            "gd15": mp.gd_at_15,
+            "csd15": mp.csd_at_15,
+            "dpm": mp.damage_to_champs / dur_min,
+        })
+
+    pass_b_count = 0
+    for (patch, role, cid), samples in by_prc_b.items():
+        if len(samples) < min_match_count:
+            continue
+        for metric in metric_attr.keys():
+            xs = [s[metric] for s in samples]
+            mu = _safe_mean(xs)
+            sd = _safe_std(xs) or 1e-6
+            db.add(ChampionDistribution(
+                patch=patch, role=role, champion_id=cid, metric=metric,
+                mean=mu, std=sd, n_samples=len(samples),
+            ))
+            out[(patch, role, cid, metric)] = (mu, sd, len(samples))
+        pass_b_count += 1
+
     db.commit()
-    logger.info("computed %d champion distributions (min_players=%d, min_games=%d)",
-                len(out), min_players_per_champion, min_games_per_player)
+    logger.info(
+        "champion distributions: %d total (Pass A: %d player-level, Pass B: %d match-level fallback)",
+        len(out) // len(metric_attr), len(qualified_a), pass_b_count,
+    )
     return out

@@ -38,7 +38,7 @@ def _run_pipeline_job(job_id: str, player_limit: int, matches_per_player: int):
             aggregate_all_players(db)
             _jobs[job_id]["step"] = "distributions"
             compute_role_distributions(db, min_games=1)
-            compute_champion_distributions(db, min_games_per_champion=10)
+            compute_champion_distributions(db, min_players_per_champion=5, min_games_per_player=3)
             _jobs[job_id]["step"] = "smurf_scoring"
             score_all_smurfs(db)
             _jobs[job_id]["step"] = "scoring"
@@ -78,7 +78,7 @@ def recompute(min_games: int = Query(default=None), db: Session = Depends(get_db
     n_lobby = compute_lobby_lp(db)
     n_aggs = aggregate_all_players(db)
     compute_role_distributions(db, min_games=max(1, min_games))
-    compute_champion_distributions(db, min_games_per_champion=10)
+    compute_champion_distributions(db, min_players_per_champion=5, min_games_per_player=3)
     n_smurf = score_all_smurfs(db)              # must run BEFORE score_all (used in factor)
     n_scored = score_all(db, min_games=max(1, min_games))
     n_champ = score_all_champions(db)

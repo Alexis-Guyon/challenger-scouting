@@ -277,14 +277,18 @@ def compute_role_distributions(db: Session, min_games: int) -> dict:
     return out
 
 
-def compute_champion_distributions(db: Session, min_games_per_champion: int = 10) -> dict:
+def compute_champion_distributions(db: Session, min_players_per_champion: int = 5,
+                                    min_games_per_player: int = 3) -> dict:
     """
     For each (patch, role, champion_id), compute mean/std of champion-level metrics
-    across the Challenger pool. Only computed for champions with N >= min_games_per_champion
-    (default 10) to keep the baseline meaningful.
+    across the Challenger pool.
+
+    A baseline is built when at least `min_players_per_champion` distinct
+    Challenger players each have ≥ `min_games_per_player` games on that champion
+    in that role+patch. Tuned to surface baselines on niche/non-meta champions
+    where the previous 10×5 threshold produced almost no coverage.
     """
-    # Pull all ChampionPool entries grouped by (patch, role, champion)
-    cps = db.query(ChampionPool).filter(ChampionPool.games >= 5).all()  # exclude 1-shot champs from baseline
+    cps = db.query(ChampionPool).filter(ChampionPool.games >= min_games_per_player).all()
     by_prc: dict[tuple[str, str, int], list[ChampionPool]] = defaultdict(list)
     for cp in cps:
         if not cp.role:
@@ -303,7 +307,7 @@ def compute_champion_distributions(db: Session, min_games_per_champion: int = 10
     db.query(ChampionDistribution).delete()
     out: dict[tuple, tuple] = {}
     for (patch, role, cid), pool in by_prc.items():
-        if len(pool) < min_games_per_champion:
+        if len(pool) < min_players_per_champion:
             continue
         for metric, attr in metric_attr.items():
             xs = [getattr(cp, attr) for cp in pool]
@@ -315,5 +319,6 @@ def compute_champion_distributions(db: Session, min_games_per_champion: int = 10
             ))
             out[(patch, role, cid, metric)] = (mu, sd, len(xs))
     db.commit()
-    logger.info("computed %d champion distributions (min_n=%d)", len(out), min_games_per_champion)
+    logger.info("computed %d champion distributions (min_players=%d, min_games=%d)",
+                len(out), min_players_per_champion, min_games_per_player)
     return out

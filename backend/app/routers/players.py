@@ -401,7 +401,32 @@ def list_players(
     elif sort == "games":
         q = q.order_by(desc(PlayerAggregate.games_played))
     elif sort == "lp":
-        q = q.outerjoin(RankSnapshot, RankSnapshot.puuid == Player.puuid).order_by(desc(RankSnapshot.lp))
+        # Sort by the LP of the *latest* RankSnapshot per player. A naive
+        # outerjoin on RankSnapshot multiplies rows (228 players have >1
+        # snapshot in DB) and ends up sorting on the historical max LP
+        # rather than current LP. Build a (puuid -> latest_date) subquery
+        # then join the actual snapshot row at that date for its LP.
+        from sqlalchemy import func as _func
+        from sqlalchemy.orm import aliased
+        latest_dates = (
+            db.query(
+                RankSnapshot.puuid.label("puuid"),
+                _func.max(RankSnapshot.snapshot_date).label("max_date"),
+            )
+            .filter(RankSnapshot.tier.isnot(None))
+            .group_by(RankSnapshot.puuid)
+            .subquery()
+        )
+        LatestRank = aliased(RankSnapshot)
+        q = (
+            q.join(latest_dates, latest_dates.c.puuid == Player.puuid)
+             .join(
+                 LatestRank,
+                 (LatestRank.puuid == latest_dates.c.puuid)
+                 & (LatestRank.snapshot_date == latest_dates.c.max_date),
+             )
+             .order_by(desc(LatestRank.lp))
+        )
     elif sort == "age":
         q = q.order_by(PlayerMeta.age.asc().nullslast())
     else:

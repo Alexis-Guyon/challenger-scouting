@@ -13,8 +13,8 @@ services:
       MIN_GAMES: ${MIN_GAMES:-20}
       MATCH_HISTORY_COUNT: ${MATCH_HISTORY_COUNT:-30}
       CURRENT_PATCH: ${CURRENT_PATCH:-14.9}
-      LP_USERNAME: ${LP_USERNAME:-}
-      LP_PASSWORD: ${LP_PASSWORD:-}
+      FANDOM_USERNAME: ${FANDOM_USERNAME:-${LP_USERNAME:-}}
+      FANDOM_PASSWORD: ${FANDOM_PASSWORD:-${LP_PASSWORD:-}}
     depends_on:
       db:
         condition: service_healthy

@@ -5,8 +5,9 @@ Uses mwclient to handle MediaWiki conventions and (optionally) authenticate
 against a Fandom bot account for relaxed rate-limits. Anonymous use is heavily
 throttled (~1 req/min after a few calls).
 
-Set LP_USERNAME / LP_PASSWORD in .env to authenticate. Get a bot password at
-https://lol.fandom.com/wiki/Special:BotPasswords (recommended, scoped credentials).
+Set FANDOM_USERNAME / FANDOM_PASSWORD in .env to authenticate (legacy
+LP_USERNAME / LP_PASSWORD names still work). Get a bot password at
+https://lol.fandom.com/wiki/Special:BotPasswords (scoped credentials).
 
 Cargo tables: https://lol.fandom.com/wiki/Special:CargoTables
 """
@@ -112,17 +113,27 @@ def _calc_age(birthdate: str | None) -> Optional[int]:
 
 
 def _connect() -> mwclient.Site:
+    """
+    Connect to lol.fandom.com (Leaguepedia is just the wiki's display name).
+    Credentials: a Fandom account's bot password — create one at
+    https://lol.fandom.com/wiki/Special:BotPasswords. Anonymous use is
+    aggressively rate-limited (~1 req / 60s after a handful of calls), so
+    setting credentials is strongly recommended for any real usage.
+
+    We accept FANDOM_USERNAME/FANDOM_PASSWORD (preferred) and fall back to
+    legacy LP_USERNAME/LP_PASSWORD names so existing .env files keep working.
+    """
     site = mwclient.Site(LP_HOST, path="/", clients_useragent=USER_AGENT)
-    user = os.getenv("LP_USERNAME")
-    pw = os.getenv("LP_PASSWORD")
+    user = os.getenv("FANDOM_USERNAME") or os.getenv("LP_USERNAME")
+    pw = os.getenv("FANDOM_PASSWORD") or os.getenv("LP_PASSWORD")
     if user and pw:
         try:
             site.login(user, pw)
-            logger.info("Leaguepedia: logged in as %s", user)
+            logger.info("lol.fandom.com: logged in as %s", user)
         except Exception as exc:
-            logger.warning("Leaguepedia login failed (%s) — falling back to anonymous", exc)
+            logger.warning("lol.fandom.com login failed (%s) — falling back to anonymous", exc)
     else:
-        logger.info("Leaguepedia: anonymous (set LP_USERNAME/LP_PASSWORD for higher rate-limits)")
+        logger.info("lol.fandom.com: anonymous (set FANDOM_USERNAME/FANDOM_PASSWORD for higher rate-limits)")
     return site
 
 

@@ -26,8 +26,8 @@ railway variables --set RIOT_API_KEY=RGAPI-xxxx \
                   --set JWT_SECRET="$(openssl rand -hex 32)" \
                   --set PLATFORM=euw1 \
                   --set REGION=europe \
-                  --set LP_USERNAME=YourFandom@bot \
-                  --set LP_PASSWORD=xxxx
+                  --set FANDOM_USERNAME=YourFandomName@bot-label \
+                  --set FANDOM_PASSWORD=xxxx
 
 # Deploy
 railway up
@@ -57,8 +57,8 @@ fly volumes create scouting_data --size 1 --region cdg
 fly secrets set \
   RIOT_API_KEY=RGAPI-xxxx \
   JWT_SECRET="$(openssl rand -hex 32)" \
-  LP_USERNAME=YourFandom@bot \
-  LP_PASSWORD=xxxx
+  FANDOM_USERNAME=YourFandomName@bot-label \
+  FANDOM_PASSWORD=xxxx
 
 # Either keep SQLite on the volume, or attach Fly Postgres:
 fly postgres create --name scouting-db --region cdg
@@ -79,7 +79,7 @@ tool), git push deploy, Postgres built-in.
 3. Point at your repo. Render reads `render.yaml` and provisions:
    - Web service (Docker)
    - Postgres database
-4. Fill in `RIOT_API_KEY`, `LP_USERNAME`, `LP_PASSWORD` in the prompt
+4. Fill in `RIOT_API_KEY`, `FANDOM_USERNAME`, `FANDOM_PASSWORD` in the prompt
 5. After deploy, open Shell tab → `python seed_admin.py admin <pwd> admin g2`
 
 ## Option D — Self-hosted VPS (Hetzner / Scaleway / Digital Ocean)
@@ -93,7 +93,7 @@ git clone <your-repo-url> /opt/scouting
 cd /opt/scouting
 
 cp backend/.env.example backend/.env
-# Edit backend/.env: set RIOT_API_KEY, JWT_SECRET, LP_USERNAME, LP_PASSWORD
+# Edit backend/.env: set RIOT_API_KEY, JWT_SECRET, FANDOM_USERNAME, FANDOM_PASSWORD
 
 docker compose up -d
 docker compose exec app python seed_admin.py admin <pwd> admin g2
@@ -134,8 +134,9 @@ files, you save no build time. **Keep them together** on one of options A-D.
 | `MIN_GAMES` | no | Default 20 |
 | `MATCH_HISTORY_COUNT` | no | Default 30 |
 | `CURRENT_PATCH` | no | Default `14.9` (informational) |
-| `LP_USERNAME` | recommended | Fandom bot username for Leaguepedia sync |
-| `LP_PASSWORD` | recommended | Fandom bot password (Special:BotPasswords) |
+| `FANDOM_USERNAME` | recommended | lol.fandom.com bot username (`YourName@bot-label`) — get one at <https://lol.fandom.com/wiki/Special:BotPasswords> |
+| `FANDOM_PASSWORD` | recommended | The bot password generated alongside the username |
+| `LP_USERNAME` / `LP_PASSWORD` | legacy | Old aliases, still accepted as fallback |
 
 ## Post-deploy checklist
 

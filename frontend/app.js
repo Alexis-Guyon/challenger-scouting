@@ -278,6 +278,7 @@ async function toggleWatch(puuid, btn) {
 
 async function loadLeaderboard() {
   const role = document.getElementById('f-role').value;
+  const tier = document.getElementById('f-tier').value;
   const patch = document.getElementById('f-patch').value;
   const min = document.getElementById('f-min').value || 1;
   const sort = document.getElementById('f-sort').value;
@@ -288,6 +289,7 @@ async function loadLeaderboard() {
 
   const params = new URLSearchParams();
   if (role) params.set('role', role);
+  if (tier) params.set('tier', tier);
   if (patch) params.set('patch', patch);
   params.set('min_games', min);
   params.set('sort', sort);

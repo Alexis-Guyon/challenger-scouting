@@ -338,6 +338,7 @@ def list_players(
     pro_only: bool = Query(default=False),
     rising_only: bool = Query(default=False, description="Only players tagged is_rising_star"),
     include_unresolved: bool = Query(default=False, description="Include stub players whose Riot name failed to resolve (shown as '(unknown)')"),
+    tier: str | None = Query(default=None, description="Filter by latest rank tier: CHALLENGER, GRANDMASTER, MASTER"),
     db: Session = Depends(get_db),
 ):
     """Scout leaderboard. Default sort = CSS desc."""
@@ -375,6 +376,37 @@ def list_players(
             & RankSnapshot.tier.isnot(None)
         )
     )
+
+    # Optional filter on the LATEST rank tier per player (CHALLENGER / GM /
+    # MASTER). We resolve "latest" via a (puuid -> max(snapshot_date))
+    # subquery so a player who used to be Challenger but is now Master
+    # gets categorised by their current tier.
+    if tier:
+        from sqlalchemy import func as _func
+        from sqlalchemy.orm import aliased
+        tier_norm = tier.strip().upper()
+        if tier_norm not in ("CHALLENGER", "GRANDMASTER", "MASTER"):
+            from fastapi import HTTPException
+            raise HTTPException(400, f"unknown tier {tier!r}; expected CHALLENGER, GRANDMASTER, MASTER")
+        _latest_dates_for_tier = (
+            db.query(
+                RankSnapshot.puuid.label("puuid"),
+                _func.max(RankSnapshot.snapshot_date).label("max_date"),
+            )
+            .filter(RankSnapshot.tier.isnot(None))
+            .group_by(RankSnapshot.puuid)
+            .subquery()
+        )
+        _LatestForTier = aliased(RankSnapshot)
+        q = (
+            q.join(_latest_dates_for_tier, _latest_dates_for_tier.c.puuid == Player.puuid)
+             .join(
+                 _LatestForTier,
+                 (_LatestForTier.puuid == _latest_dates_for_tier.c.puuid)
+                 & (_LatestForTier.snapshot_date == _latest_dates_for_tier.c.max_date),
+             )
+             .filter(_LatestForTier.tier == tier_norm)
+        )
 
     if pro_only:
         q = q.filter(PlayerMeta.is_pro == True)  # noqa: E712

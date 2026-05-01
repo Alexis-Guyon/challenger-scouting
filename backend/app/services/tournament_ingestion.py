@@ -140,8 +140,14 @@ def _final_state(window_data: dict) -> dict:
 
 
 async def _ingest_one_game(client: LolesportsClient, db: Session,
-                           game_id: str, event: dict, tournament_id: str) -> tuple[bool, str]:
-    """Pull 1 game's frame data and persist. Returns (added, reason)."""
+                           game_id: str, event: dict, tournament_id: str,
+                           game_teams: list | None = None) -> tuple[bool, str]:
+    """Pull 1 game's frame data and persist. Returns (added, reason).
+
+    `game_teams` is the per-game [{"id": ..., "side": "blue|red"}, ...] from
+    getEventDetails — used to correctly identify blue vs red side. Without it
+    we'd fall back on schedule order, which has nothing to do with side.
+    """
     if db.get(OfficialMatch, game_id):
         return False, "already_exists"
 
@@ -205,13 +211,32 @@ async def _ingest_one_game(client: LolesportsClient, db: Session,
                 if pid is not None:
                     details_pid[pid] = p
 
-    # Determine teams + winner from the schedule event
+    # Determine sides + winner. Per-game side comes from getEventDetails.
+    # Outcome comes from event-level match.teams[i].result.outcome (Bo1: per-game,
+    # Bo3+: aggregate series winner — accurate for LEC regular season Bo1).
     match_meta = (event.get("match") or {})
     teams = match_meta.get("teams", []) or []
-    blue_team = teams[0] if teams else {}
-    red_team = teams[1] if len(teams) > 1 else {}
-    blue_team_id = blue_team.get("id")
-    red_team_id = red_team.get("id")
+    by_team_id: dict[str, dict] = {t.get("id"): t for t in teams if t.get("id")}
+
+    side_to_team_id: dict[str, str] = {}
+    if game_teams:
+        for t in game_teams:
+            side = (t.get("side") or "").lower()
+            tid = t.get("id")
+            if side and tid:
+                side_to_team_id[side] = tid
+
+    blue_team_id = side_to_team_id.get("blue")
+    red_team_id = side_to_team_id.get("red")
+
+    # Fall back to schedule order (legacy) if eventDetails didn't expose sides.
+    if not blue_team_id and len(teams) >= 1:
+        blue_team_id = teams[0].get("id")
+    if not red_team_id and len(teams) >= 2:
+        red_team_id = teams[1].get("id")
+
+    blue_team = by_team_id.get(blue_team_id, {})
+    red_team = by_team_id.get(red_team_id, {})
     blue_win = None
     if blue_team.get("result", {}).get("outcome") == "win":
         blue_win = True
@@ -375,9 +400,32 @@ async def ingest_league(client: LolesportsClient, db: Session, league: dict, max
             continue
         games = ((details_event.get("match") or {}).get("games") or [])
 
-        # Resolve team IDs from event details (schedule gives only code/name)
+        # Merge team data from both sources:
+        # - schedule (ev.match.teams):    has result.outcome, result.gameWins, no ID
+        # - eventDetails (details.match.teams): has id + code, has gameWins but
+        #   often missing the outcome field
+        # We merge by `code` so the final team dict has id + code + name + image
+        # (from eventDetails) AND a complete result with outcome (from schedule).
         teams_detail = (details_event.get("match") or {}).get("teams") or []
-        merged_event = {**ev, "match": {**(ev.get("match") or {}), "teams": teams_detail or (ev.get("match") or {}).get("teams", [])}}
+        teams_schedule = ((ev.get("match") or {}).get("teams") or [])
+        result_by_code: dict[str, dict] = {
+            t.get("code"): (t.get("result") or {})
+            for t in teams_schedule if t.get("code")
+        }
+        merged_teams = []
+        for t in (teams_detail or teams_schedule):
+            code = t.get("code")
+            merged = dict(t)
+            sched_result = result_by_code.get(code) or {}
+            existing_result = merged.get("result") or {}
+            # Union of both result dicts; schedule wins for outcome, both keep gameWins
+            merged_result = {**existing_result, **sched_result}
+            # If still no outcome but we have gameWins, derive: gameWins>=1 = win in Bo1
+            if not merged_result.get("outcome") and "gameWins" in merged_result:
+                merged_result["outcome"] = "win" if merged_result["gameWins"] >= 1 else "loss"
+            merged["result"] = merged_result
+            merged_teams.append(merged)
+        merged_event = {**ev, "match": {**(ev.get("match") or {}), "teams": merged_teams}}
 
         for game in games:
             if game.get("state") != "completed":
@@ -394,7 +442,10 @@ async def ingest_league(client: LolesportsClient, db: Session, league: dict, max
                         tournament_id = t["id"]
                         break
             try:
-                added, reason = await _ingest_one_game(client, db, gid, merged_event, tournament_id)
+                added, reason = await _ingest_one_game(
+                    client, db, gid, merged_event, tournament_id,
+                    game_teams=game.get("teams") or [],
+                )
                 if added:
                     new_count += 1
                 else:

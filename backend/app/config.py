@@ -12,6 +12,16 @@ class Settings(BaseSettings):
     jwt_secret: str = "dev-secret-change-me"
     jwt_expiry_hours: int = 72
 
+    # lol.fandom.com bot credentials (Leaguepedia/Cargo). Anonymous use is rate-
+    # limited to ~1 req/min — basically unusable. Get a bot password at
+    # https://lol.fandom.com/wiki/Special:BotPasswords
+    fandom_username: str = ""
+    fandom_password: str = ""
+    # Legacy aliases — still accepted for back-compat. If both are set,
+    # the FANDOM_* names win.
+    lp_username: str = ""
+    lp_password: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 

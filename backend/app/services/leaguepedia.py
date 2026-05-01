@@ -21,6 +21,7 @@ from typing import Iterable, Optional
 import mwclient
 from sqlalchemy.orm import Session
 
+from ..config import settings
 from ..models import Player, PlayerMeta
 
 logger = logging.getLogger(__name__)
@@ -122,27 +123,45 @@ def _file_path_url(filename: str | None) -> str | None:
     return f"https://lol.fandom.com/wiki/Special:FilePath/{quote(f)}"
 
 
+_AUTH_STATE: dict = {"authed": False, "as": None, "error": None}
+
+
 def _connect() -> mwclient.Site:
     """
-    Connect to lol.fandom.com (Leaguepedia is just the wiki's display name).
-    Credentials: a Fandom account's bot password — create one at
-    https://lol.fandom.com/wiki/Special:BotPasswords. Anonymous use is
-    aggressively rate-limited (~1 req / 60s after a handful of calls), so
-    setting credentials is strongly recommended for any real usage.
+    Connect to lol.fandom.com.
 
-    We accept FANDOM_USERNAME/FANDOM_PASSWORD (preferred) and fall back to
-    legacy LP_USERNAME/LP_PASSWORD names so existing .env files keep working.
+    REQUIRES a *bot password* (not the regular Fandom account password).
+    Get one at https://lol.fandom.com/wiki/Special:BotPasswords. The username
+    you receive is `<MainAccount>@<label>` and the password is a long hash.
+
+    Anonymous use is rate-limited to ~1 req/min and basically unusable for
+    syncing 2000+ pros.
     """
     site = mwclient.Site(LP_HOST, path="/", clients_useragent=USER_AGENT)
-    user = os.getenv("FANDOM_USERNAME") or os.getenv("LP_USERNAME")
-    pw = os.getenv("FANDOM_PASSWORD") or os.getenv("LP_PASSWORD")
+    user = settings.fandom_username or settings.lp_username \
+        or os.getenv("FANDOM_USERNAME") or os.getenv("LP_USERNAME")
+    pw = settings.fandom_password or settings.lp_password \
+        or os.getenv("FANDOM_PASSWORD") or os.getenv("LP_PASSWORD")
+
+    _AUTH_STATE.update(authed=False, as_=None, error=None)
     if user and pw:
         try:
             site.login(user, pw)
+            _AUTH_STATE.update(authed=True, **{"as": user})
             logger.info("lol.fandom.com: logged in as %s", user)
         except Exception as exc:
-            logger.warning("lol.fandom.com login failed (%s) — falling back to anonymous", exc)
+            err = f"{type(exc).__name__}: {exc}"
+            _AUTH_STATE["error"] = err
+            if "@" not in (user or ""):
+                _AUTH_STATE["error"] += (
+                    " | Hint: FANDOM_USERNAME must be a *bot password* "
+                    "user of the form 'MainAccount@bot-label' (created at "
+                    "https://lol.fandom.com/wiki/Special:BotPasswords). The "
+                    "regular Fandom account password does NOT work for the API."
+                )
+            logger.warning("lol.fandom.com login failed (%s) — falling back to anonymous", _AUTH_STATE["error"])
     else:
+        _AUTH_STATE["error"] = "no FANDOM_USERNAME/FANDOM_PASSWORD set"
         logger.info("lol.fandom.com: anonymous (set FANDOM_USERNAME/FANDOM_PASSWORD for higher rate-limits)")
     return site
 
@@ -308,6 +327,9 @@ def run_leaguepedia_sync_sync(db: Session) -> dict:
     stats = sync_players_with_lookup(db, lookup)
     stats["pros_in_lookup"] = len(lookup)
     stats["raw_records_fetched"] = len(pros)
+    stats["authenticated"] = _AUTH_STATE.get("authed", False)
+    if not _AUTH_STATE.get("authed"):
+        stats["auth_error"] = _AUTH_STATE.get("error") or "anonymous"
     return stats
 
 

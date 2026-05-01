@@ -167,60 +167,64 @@ def _connect() -> mwclient.Site:
 
 
 def _cargo_query(site: mwclient.Site, **kwargs) -> list[dict]:
-    """Wrap site.api with Cargo + retry on rate-limit."""
+    """Wrap site.api with Cargo + retry on rate-limit / transient errors.
+
+    Uses an exponential backoff: 60s, 120s, 240s, 480s, 600s. Total worst-case
+    wait is ~25 min per call — long, but Fandom's rate-limit window is
+    similarly long after a heavy session. Better to wait than to bail out.
+    """
     params = {**kwargs, "action": "cargoquery", "format": "json"}
-    for attempt in range(5):
+    waits = [60, 120, 240, 480, 600]
+    for attempt, wait in enumerate(waits):
         try:
             data = site.api(**params)
-        except mwclient.errors.APIError as exc:
-            if "ratelimited" in str(exc):
-                wait = 30 * (attempt + 1)
-                logger.warning("Leaguepedia rate-limited, sleeping %ds (attempt %d/5)", wait, attempt + 1)
+        except (mwclient.errors.APIError, mwclient.errors.InvalidResponse) as exc:
+            if "ratelimited" in str(exc) or isinstance(exc, mwclient.errors.InvalidResponse):
+                logger.warning("Leaguepedia rate-limited / blocked, sleeping %ds (attempt %d/%d)",
+                               wait, attempt + 1, len(waits))
                 time.sleep(wait)
                 continue
             raise
         if "error" in data:
             code = data["error"].get("code")
             if code == "ratelimited":
-                wait = 30 * (attempt + 1)
-                logger.warning("Leaguepedia rate-limited, sleeping %ds (attempt %d/5)", wait, attempt + 1)
+                logger.warning("Leaguepedia rate-limited, sleeping %ds (attempt %d/%d)",
+                               wait, attempt + 1, len(waits))
                 time.sleep(wait)
                 continue
             raise LeaguepediaError(f"Cargo: {data['error']}")
         return [row["title"] for row in data.get("cargoquery", [])]
-    raise LeaguepediaError("Cargo: rate-limit retries exhausted")
+    raise LeaguepediaError("Cargo: rate-limit retries exhausted (>25 min). "
+                           "Wait 30 min before retrying — your IP is in cooldown.")
+
+
+_FIELDS = ",".join([
+    "Player", "OverviewPage", "Country", "NationalityPrimary", "Residency",
+    "Birthdate", "Role", "Team", "IsRetired", "SoloqueueIds", "ContractEnd",
+    "Image",
+])
+
+
+def _quote_for_cargo(s: str) -> str:
+    """Cargo's `where IN (...)` uses double-quoted strings. Escape internal quotes."""
+    return '"' + s.replace('"', '\\"') + '"'
 
 
 def fetch_active_pros(residencies: Iterable[str] = ("Europe",)) -> list[dict]:
+    """
+    Bulk fetch all active pros for a residency. Slow + rate-limit prone — use
+    fetch_pros_by_name() instead when possible.
+    """
     site = _connect()
     res_clause = " OR ".join(f'Residency="{r}"' for r in residencies)
     where = f"({res_clause}) AND IsRetired=0"
-
-    fields = ",".join([
-        "Player",
-        "OverviewPage",
-        "Country",
-        "NationalityPrimary",
-        "Residency",
-        "Birthdate",
-        "Role",
-        "Team",
-        "IsRetired",
-        "SoloqueueIds",
-        "ContractEnd",
-        "Image",  # filename of the player's headshot, served via Special:FilePath
-    ])
 
     out: list[dict] = []
     offset = 0
     while True:
         rows = _cargo_query(
-            site,
-            tables="Players",
-            fields=fields,
-            where=where,
-            limit=PAGE_SIZE,
-            offset=offset,
+            site, tables="Players", fields=_FIELDS, where=where,
+            limit=PAGE_SIZE, offset=offset,
         )
         if not rows:
             break
@@ -228,8 +232,41 @@ def fetch_active_pros(residencies: Iterable[str] = ("Europe",)) -> list[dict]:
         if len(rows) < PAGE_SIZE:
             break
         offset += PAGE_SIZE
-        time.sleep(1.0)  # gentle pacing between pages
+        time.sleep(2.0)
     logger.info("Leaguepedia: fetched %d active pros for residencies=%s", len(out), list(residencies))
+    return out
+
+
+def fetch_pros_by_name(names: Iterable[str], chunk_size: int = 30) -> list[dict]:
+    """
+    Targeted fetch: pulls Cargo Players rows for an explicit list of canonical
+    names (e.g. ["Hans sama", "Caps", "Faker"]). Way faster + lighter than a
+    paginated full residency dump — typically 2-3 queries vs 8+.
+    """
+    site = _connect()
+    names = [n for n in (names or []) if n and n.strip()]
+    out: list[dict] = []
+    seen_players: set[str] = set()
+    n_chunks = (len(names) + chunk_size - 1) // chunk_size
+    for i in range(0, len(names), chunk_size):
+        chunk = names[i:i + chunk_size]
+        in_clause = ",".join(_quote_for_cargo(n) for n in chunk)
+        where = f"Player IN ({in_clause})"
+        try:
+            rows = _cargo_query(site, tables="Players", fields=_FIELDS, where=where, limit=PAGE_SIZE)
+        except LeaguepediaError as exc:
+            logger.error("Leaguepedia: stopping after partial fetch (%d/%d chunks): %s",
+                         i // chunk_size, n_chunks, exc)
+            break
+        for r in rows:
+            key = r.get("Player")
+            if key and key not in seen_players:
+                seen_players.add(key)
+                out.append(r)
+        # Pacing between chunks — important to avoid tripping the limiter
+        time.sleep(3.0)
+    logger.info("Leaguepedia: fetched %d profiles (targeted %d names, %d chunks)",
+                len(out), len(names), n_chunks)
     return out
 
 
@@ -265,7 +302,11 @@ def sync_players_with_lookup(db: Session, lookup: dict[str, dict]) -> dict:
     now = datetime.now(timezone.utc)
     matched = unmatched = images_found = 0
     players = db.query(Player).all()
+    processed = 0
     for p in players:
+        processed += 1
+        if processed % 200 == 0:
+            db.commit()  # incremental commit so we don't lose work on a crash
         rec = None
         for candidate in _candidate_normalizations(p.summoner_name or ""):
             if candidate in lookup:
@@ -321,12 +362,35 @@ def sync_players_with_lookup(db: Session, lookup: dict[str, dict]) -> dict:
 
 
 def run_leaguepedia_sync_sync(db: Session) -> dict:
-    """Synchronous full sync — meant to be called from a background task."""
-    pros = fetch_active_pros(residencies=("Europe",))
+    """
+    Synchronous full sync.
+
+    Strategy: targeted-first. We try to query Leaguepedia ONLY for pros we
+    already matched via Lolpros (we have their canonical name in
+    PlayerMeta.leaguepedia_id). That's a single Cargo query instead of 8+.
+    Falls back to the bulk EU residency dump if no Lolpros matches yet.
+    """
+    # Targeted: pull canonical names from Lolpros-matched pros
+    targets = (
+        db.query(PlayerMeta.leaguepedia_id)
+        .filter(PlayerMeta.is_pro == True, PlayerMeta.leaguepedia_id.isnot(None))  # noqa: E712
+        .distinct()
+        .all()
+    )
+    target_names = sorted({r[0] for r in targets if r[0]})
+
+    if target_names:
+        logger.info("Leaguepedia: targeted sync for %d names from Lolpros matches", len(target_names))
+        pros = fetch_pros_by_name(target_names)
+    else:
+        logger.info("Leaguepedia: no Lolpros-matched names yet, falling back to bulk EU residency fetch")
+        pros = fetch_active_pros(residencies=("Europe",))
+
     lookup = build_lookup(pros)
     stats = sync_players_with_lookup(db, lookup)
     stats["pros_in_lookup"] = len(lookup)
     stats["raw_records_fetched"] = len(pros)
+    stats["targeted_names"] = len(target_names)
     stats["authenticated"] = _AUTH_STATE.get("authed", False)
     if not _AUTH_STATE.get("authed"):
         stats["auth_error"] = _AUTH_STATE.get("error") or "anonymous"

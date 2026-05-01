@@ -79,14 +79,44 @@ def _candidates_for_match(s: str | None) -> list[str]:
 
 
 def _resolve_pro_player_id(db: Session, player: Player, meta: PlayerMeta | None) -> str | None:
-    """Find lolesports pro_player_id for a Riot player. Cached on PlayerMeta.lolesports_id."""
+    """
+    Find lolesports pro_player_id for a Riot player.
+    Cross-references in this order:
+      1. Cached PlayerMeta.lolesports_id (fast path)
+      2. Multiple candidate normalizations of the current Riot ID
+      3. Lolpros canonical name (e.g. "Adking") + every historical summoner_name
+         the pro has used (e.g. an old "ADKINGEUW#EUW" before the team prefix).
+    """
+    import json as _json
+
     if meta and meta.lolesports_id:
         return meta.lolesports_id
 
-    candidates = _candidates_for_match(player.summoner_name)
-    if not candidates:
+    cand_set = set(_candidates_for_match(player.summoner_name))
+
+    # Expand with Lolpros canonical name + historical summoner_names if cached.
+    # This is the bridge that lets "KC NEXT ADKING#EUW" match a tournament row
+    # whose lolesports player_name is just "Adking".
+    if meta and meta.lolpros_profile_json:
+        try:
+            profile = _json.loads(meta.lolpros_profile_json)
+        except Exception:
+            profile = None
+        if profile:
+            if profile.get("name"):
+                cand_set.update(_candidates_for_match(profile["name"]))
+            league_player = profile.get("league_player") or {}
+            for acc in league_player.get("accounts", []) or []:
+                for sn in acc.get("summoner_names", []) or []:
+                    cand_set.update(_candidates_for_match(sn.get("name", "")))
+                # The current account's primary IGN
+                if acc.get("summoner_name"):
+                    cand_set.update(_candidates_for_match(acc["summoner_name"]))
+                if acc.get("gamename"):
+                    cand_set.update(_candidates_for_match(acc["gamename"]))
+
+    if not cand_set:
         return None
-    cand_set = set(candidates)
 
     rows = (
         db.query(OfficialMatchParticipant)
@@ -97,9 +127,12 @@ def _resolve_pro_player_id(db: Session, player: Player, meta: PlayerMeta | None)
         .all()
     )
     for c in rows:
-        sname = _normalize_for_match(c.summoner_name)
-        pname = _normalize_for_match(c.player_name)
-        if sname in cand_set or pname in cand_set:
+        # Generate candidates on the tournament side too so "KC Caliste" -> "caliste"
+        # matches the player's "Caliste" Lolpros alias.
+        c_cands: set[str] = set()
+        c_cands.update(_candidates_for_match(c.summoner_name or ""))
+        c_cands.update(_candidates_for_match(c.player_name or ""))
+        if cand_set & c_cands:
             if meta:
                 meta.lolesports_id = c.pro_player_id
                 db.commit()

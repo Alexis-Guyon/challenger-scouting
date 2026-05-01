@@ -211,13 +211,33 @@ def _is_transient_lp_error(exc: Exception) -> bool:
     )
 
 
+def _cargo_query_raw(params: dict) -> list[dict]:
+    """
+    Anonymous fallback when mwclient's authenticated session triggers
+    `internal_api_error_MWException`. We use plain httpx with a clean session
+    (no cookies, no continuation tokens). Fandom's anon Cargo accepts the same
+    queries but with stricter rate-limits.
+    """
+    import httpx
+    full_params = {**params, "action": "cargoquery", "format": "json"}
+    with httpx.Client(timeout=20.0, headers={"User-Agent": USER_AGENT}) as client:
+        r = client.get(f"https://{LP_HOST}/api.php", params=full_params)
+        r.raise_for_status()
+        data = r.json()
+        if "error" in data:
+            raise LeaguepediaError(f"Cargo (anon): {data['error']}")
+        return [row["title"] for row in data.get("cargoquery", [])]
+
+
 def _cargo_query(site: mwclient.Site, **kwargs) -> list[dict]:
     """
     Wrapper around MediaWiki Cargo API.
 
     Retries on:
     - rate limits
-    - Fandom internal_api_error_MWException
+    - Fandom internal_api_error_MWException (may indicate a bug in the
+      authenticated session — we fall back to anonymous httpx if mwclient
+      keeps tripping it)
     - invalid / blocked responses
     """
     params = {
@@ -228,12 +248,28 @@ def _cargo_query(site: mwclient.Site, **kwargs) -> list[dict]:
 
     waits = [10, 30, 60, 120, 240]
 
+    mw_failures_in_a_row = 0
     for attempt, wait in enumerate(waits):
+        # Quick fallback to anonymous httpx after 2 mwclient MWException hits
+        # in a row — that error pattern means the authenticated session itself
+        # is the trigger, not the query. Anon doesn't share the bug.
+        if mw_failures_in_a_row >= 2:
+            try:
+                rows = _cargo_query_raw(params)
+                logger.info("Leaguepedia: fell back to anonymous httpx — got %d rows", len(rows))
+                return rows
+            except LeaguepediaError as exc:
+                logger.warning("Leaguepedia anonymous fallback also failed: %s", exc)
+                # Reset and continue retrying mwclient
+                mw_failures_in_a_row = 0
+
         try:
             data = site.api(**params)
 
         except (mwclient.errors.APIError, mwclient.errors.InvalidResponse) as exc:
             if _is_transient_lp_error(exc):
+                if "MWException" in str(exc) or "internal_api_error" in str(exc):
+                    mw_failures_in_a_row += 1
                 logger.warning(
                     "Leaguepedia transient Cargo/API error, sleeping %ds "
                     "(attempt %d/%d): %s",
@@ -251,6 +287,8 @@ def _cargo_query(site: mwclient.Site, **kwargs) -> list[dict]:
             code = data["error"].get("code", "")
 
             if code == "ratelimited" or code.startswith("internal_api_error"):
+                if code.startswith("internal_api_error"):
+                    mw_failures_in_a_row += 1
                 logger.warning(
                     "Leaguepedia Cargo error %s, sleeping %ds "
                     "(attempt %d/%d)",
@@ -263,6 +301,8 @@ def _cargo_query(site: mwclient.Site, **kwargs) -> list[dict]:
                 continue
 
             raise LeaguepediaError(f"Cargo: {data['error']}")
+        # Success — reset counter
+        mw_failures_in_a_row = 0
 
         return [row["title"] for row in data.get("cargoquery", [])]
 

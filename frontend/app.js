@@ -132,6 +132,16 @@ const GLOSSARY = {
     { term: "Contract end",   desc: "When contracts data is public (Leaguepedia). Filter 'within 90d' surfaces upcoming free agents." },
     { term: "Lobby LP",       desc: "Mean LP of all 10 participants in a player's matches. Used to discount soft-lobby grinds." },
   ],
+  "Match deep-dive & replays": [
+    { term: "Match deep-dive",
+      desc: "Click any row in 'Recent matches' on a player profile. Loads the gold curve, kill/objective/tower events with timestamps, and roster K/D/A. Data is pulled live from Riot, cached 30 min." },
+    { term: "Download JSON",
+      desc: "Bundles match-v5 + timeline as a single JSON file for offline analysis. Includes everything Riot exposes — every frame, every event, every participant." },
+    { term: ".rofl replay",
+      desc: "The actual in-game replay file (binary, ~5 MB) is NOT available via Riot's public API. Only the LoL client (LCU) can download it, locally on a machine where the player is logged in. The 'How to get .rofl' button shows the manual path." },
+    { term: "External links",
+      desc: "Deep-links to op.gg / leagueofgraphs / Lolpros / Blitz so you can open the match on any of those services. Some may 404 if they don't index the game." },
+  ],
 };
 
 function openGlossary() {
@@ -1176,10 +1186,19 @@ function renderMatchModal(data) {
   const blueSide = data.participants.filter(p => p.team_id === 100);
   const redSide  = data.participants.filter(p => p.team_id === 200);
   const winner = data.blue_win ? 'Blue' : 'Red';
+  const dlUrl = (API_BASE || '') + `/matches/${data.match_id}/export`;
+  const token = getToken();
 
   body.innerHTML = `
-    <div class="muted" style="margin-bottom:12px;font-size:13px;">
-      Patch ${data.patch || '?'} · ${data.duration_min} min · Winner: <strong style="color:${data.blue_win ? '#6ea8ff' : '#ff8b8b'}">${winner}</strong>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:12px;flex-wrap:wrap;">
+      <div class="muted" style="font-size:13px;">
+        Patch ${data.patch || '?'} · ${data.duration_min} min · Winner: <strong style="color:${data.blue_win ? '#6ea8ff' : '#ff8b8b'}">${winner}</strong>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button id="match-download" class="export-btn" style="font-size:12px;padding:6px 12px;" title="Download Riot match-v5 data + timeline as JSON. NOT the .rofl in-game replay (those require the LoL client).">📥 Download JSON</button>
+        <button id="match-external" class="secondary" style="font-size:12px;padding:6px 12px;" title="Open this match on external scouting sites">🔗 External</button>
+        <button id="match-replay-help" class="secondary" style="font-size:12px;padding:6px 12px;" title="How to download the in-game .rofl replay">▶ How to get .rofl</button>
+      </div>
     </div>
 
     <div class="grid-2">
@@ -1247,6 +1266,78 @@ function renderMatchModal(data) {
       plugins: { legend: { labels: { color: '#ebeced' } } },
     },
   });
+
+  // Wire buttons
+  document.getElementById('match-download').addEventListener('click', async () => {
+    // Fetch with auth header (can't put Bearer in <a href>), then trigger blob download
+    const res = await fetch(dlUrl, { headers: { 'Authorization': 'Bearer ' + token } });
+    if (!res.ok) { alert('Export failed: ' + res.status); return; }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `match_${data.match_id}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+
+  document.getElementById('match-external').addEventListener('click', async () => {
+    const linksData = await API(`/matches/${data.match_id}/external-links`);
+    const links = linksData.links;
+    const html = `
+      <p style="margin-top:0;">Open this match on:</p>
+      <ul style="line-height:2;list-style:none;padding:0;">
+        ${Object.entries(links).map(([k, v]) =>
+          `<li>🔗 <a href="${v}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none;font-weight:600;">${k}</a> <span class="muted" style="font-size:11px;">${v}</span></li>`
+        ).join('')}
+      </ul>
+      <p class="muted" style="font-size:11px;margin-top:12px;">Some of these may 404 — third-party sites only index public/recent games. op.gg works for most EUW SoloQ matches.</p>
+    `;
+    showInlineDialog('External match links', html);
+  });
+
+  document.getElementById('match-replay-help').addEventListener('click', async () => {
+    const linksData = await API(`/matches/${data.match_id}/external-links`);
+    const html = `
+      <p style="margin-top:0;"><strong>Riot's public API never exposes <code>.rofl</code> replay files.</strong> Only the LoL client itself can download them, via the local LCU on the player's machine.</p>
+      <p>Two ways to get this match's replay:</p>
+      <ol style="padding-left:20px;line-height:1.8;">
+        <li>Open <strong>League of Legends client</strong> → <strong>Match History</strong> → find this match (use the patch + champion to locate it) → click the <strong>↓ download</strong> arrow → it saves a <code>.rofl</code> file in <code>%USERPROFILE%\\Documents\\League of Legends\\Replays</code>. Only works if your account participated.</li>
+        <li>Use the <strong>Download JSON</strong> button instead — gives you all the stats Riot exposes for offline analysis (no actual replay video, but full timeline + events).</li>
+      </ol>
+      <p class="muted" style="font-size:11px;">Match ID: <code>${data.match_id}</code> — copy this to find it faster in the client.</p>
+    `;
+    showInlineDialog('How to get the .rofl replay', html);
+  });
+}
+
+function showInlineDialog(title, htmlContent) {
+  // Simple dialog reusing the match-modal styling. Stacks ON TOP of the
+  // existing match modal so closing it returns to the deep-dive.
+  let dlg = document.getElementById('inline-dialog');
+  if (!dlg) {
+    dlg = document.createElement('div');
+    dlg.id = 'inline-dialog';
+    dlg.className = 'match-modal';
+    dlg.innerHTML = `
+      <div class="match-modal-card" style="max-width:560px;">
+        <div class="match-modal-head">
+          <h3 id="inline-dialog-title"></h3>
+          <button class="secondary" style="padding:4px 10px;" onclick="document.getElementById('inline-dialog').classList.remove('open')">✕</button>
+        </div>
+        <div id="inline-dialog-body" class="match-modal-body"></div>
+      </div>
+    `;
+    document.body.appendChild(dlg);
+    dlg.addEventListener('click', (e) => {
+      if (e.target.id === 'inline-dialog') e.currentTarget.classList.remove('open');
+    });
+  }
+  document.getElementById('inline-dialog-title').textContent = title;
+  document.getElementById('inline-dialog-body').innerHTML = htmlContent;
+  dlg.classList.add('open');
 }
 
 function renderEvent(ev) {

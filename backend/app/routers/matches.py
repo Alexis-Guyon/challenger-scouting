@@ -11,10 +11,12 @@ A small in-memory cache keeps recently-viewed matches warm so navigating back
 and forth doesn't re-fetch.
 """
 import asyncio
+import json
 import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from ..auth import get_current_user
@@ -166,3 +168,87 @@ async def match_timeline(
     }
     _TIMELINE_CACHE[match_id] = (payload, now + _CACHE_TTL_SEC)
     return payload
+
+
+# ---------- Replay / export helpers ----------
+
+@router.get("/{match_id}/export")
+async def match_export(
+    match_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Bundle match-v5 data + timeline data into a single downloadable JSON.
+
+    Note: this is NOT the .rofl in-game replay file (Riot's public API never
+    exposes those — only the LoL client itself can download .rofl, via its
+    local LCU on the player's machine). What you get here is everything Riot
+    offers programmatically: full match summary, per-participant stats, and
+    the frame-by-frame timeline. Enough for offline scout review, statistical
+    analysis, or piping into a 3rd-party visualizer.
+    """
+    if not db.get(Match, match_id):
+        raise HTTPException(404, "match not in DB — ingest it first")
+
+    async with RiotClient() as client:
+        try:
+            match_data = await client.match(match_id)
+            timeline = await client.match_timeline(match_id)
+        except Exception as exc:
+            raise HTTPException(502, f"Riot API failed: {exc}")
+
+    bundle = {
+        "match_id": match_id,
+        "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "note": (
+            "This is the Riot match-v5 data + timeline. Not a .rofl in-game "
+            "replay file (those require the LoL client's LCU API). Use this "
+            "for stat analysis or 3rd-party visualizers."
+        ),
+        "match": match_data,
+        "timeline": timeline,
+    }
+    body = json.dumps(bundle, indent=2)
+    return Response(
+        content=body,
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="match_{match_id}.json"',
+        },
+    )
+
+
+@router.get("/{match_id}/external-links")
+def match_external_links(match_id: str, db: Session = Depends(get_db)):
+    """
+    Pre-built external URLs for a match.
+    Frontend uses these to drop deep-links to op.gg / lolprofile / leagueofgraphs.
+    """
+    if not db.get(Match, match_id):
+        raise HTTPException(404, "match not in DB")
+
+    # Match IDs look like "EUW1_7842018193". Strip the platform prefix for
+    # services that expect just the numeric id.
+    parts = match_id.split("_", 1)
+    region_prefix = parts[0].lower() if len(parts) == 2 else "euw1"
+    numeric = parts[1] if len(parts) == 2 else match_id
+
+    # op.gg uses lowercase server codes; map ours (euw1 → euw)
+    OPGG_REGION = {"euw1": "euw", "eun1": "eune", "kr": "kr", "na1": "na",
+                   "br1": "br", "jp1": "jp", "la1": "lan", "la2": "las",
+                   "oc1": "oce", "tr1": "tr", "ru": "ru"}.get(region_prefix, region_prefix.replace("1", ""))
+
+    return {
+        "match_id": match_id,
+        "links": {
+            "opgg": f"https://www.op.gg/lol/match/{OPGG_REGION.upper()}/{match_id}",
+            "leagueofgraphs": f"https://www.leagueofgraphs.com/match/{OPGG_REGION}/{numeric}",
+            "lolpros": f"https://lolpros.gg/games/{match_id}",
+            "blitz": f"https://app.blitz.gg/lol/match/{match_id}",
+        },
+        "lol_client_instructions": (
+            "Open the LoL client → 'Match History' → find this game by date "
+            "or champion → click the download arrow (only available for games "
+            "you played in or spectated)."
+        ),
+    }

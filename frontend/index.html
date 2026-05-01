@@ -47,10 +47,21 @@
     </nav>
     <div class="user-menu">
       <span id="user-label" class="muted"></span>
+      <button id="glossary-btn" class="secondary" title="Stat definitions">📖 Glossary</button>
       <button id="logout-btn" class="secondary">Logout</button>
     </div>
   </header>
   <main id="app"></main>
+
+  <!-- Glossary panel (slide-in from the right) -->
+  <aside id="glossary-panel" class="glossary-panel" aria-hidden="true">
+    <div class="glossary-header">
+      <h3>Stat glossary</h3>
+      <button id="glossary-close" class="secondary" style="padding:4px 10px;">✕</button>
+    </div>
+    <div class="glossary-body" id="glossary-body"></div>
+  </aside>
+  <div id="glossary-backdrop" class="glossary-backdrop" aria-hidden="true"></div>
 </div>
 
 <template id="tpl-leaderboard">
@@ -115,10 +126,20 @@
       <table id="lb-table">
         <thead>
           <tr>
-            <th>#</th><th>Summoner</th><th>Pro</th><th>Team</th><th>Age</th><th>Tier</th><th>LP</th>
-            <th>Role</th><th>Patch</th>
-            <th>Games</th><th>WR</th><th>Pool</th>
-            <th>CSS</th><th>%ile</th>
+            <th title="Rank in current view (offset + position)">#</th>
+            <th title="Riot ID — gameName#tagLine">Summoner</th>
+            <th title="Pro status from Lolpros: pro / FA / retired / —">Pro</th>
+            <th title="Current rostered team (from Lolpros)">Team</th>
+            <th title="Age (when birthdate is on Leaguepedia)">Age</th>
+            <th title="Riot's official rank tier">Tier</th>
+            <th title="League Points — official Riot ranking metric">LP</th>
+            <th title="Most-played role on the sample">Role</th>
+            <th title="LoL game patch on which this aggregate was computed">Patch</th>
+            <th title="Number of SoloQ games we ingested for this player on this patch+role">Games</th>
+            <th title="Winrate on the ingested sample">WR</th>
+            <th title="Champion pool size — distinct champions with ≥3 games">Pool</th>
+            <th title="Challenger Scouting Score 0–100. Z-score vs Challenger pool, weighted by role.">CSS</th>
+            <th title="Percentile rank within (patch, role) — P95 = top 5%">%ile</th>
             <th></th>
           </tr>
         </thead>

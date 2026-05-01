@@ -69,6 +69,91 @@ document.getElementById('logout-btn').addEventListener('click', () => {
   showLogin();
 });
 
+/* ---------------- GLOSSARY ---------------- */
+const GLOSSARY = {
+  "Scoring": [
+    { term: "CSS",  formula: "50 + 15·z(player vs Challenger pool)",
+      desc: "Challenger Scouting Score on 0-100. Per-role weighted z-score across 8 categories. >75 elite, 60-75 strong, 45-60 average." },
+    { term: "%ile (Percentile rank)", formula: "rank / N × 100 within (patch, role)",
+      desc: "Position in the Challenger distribution for this role and patch. P95 = top 5% of MIDs on patch X.Y." },
+    { term: "Champ CSS", formula: "z(player avg) vs same-champion Challenger baseline",
+      desc: "Per-champion score: how the player performs ON this specific champion vs every other Challenger main of it. '—' = not enough mains in DB to baseline." },
+    { term: "Smurf score", formula: "weighted sum of 5 signals → [0,1]",
+      desc: "Multi-signal smurf likelihood: low account level + high LP, few lifetime games, suspicious WR, one-trick at level, high CSS at low level." },
+    { term: "Lobby factor", formula: "1.0 ± clip(0.10, (avg_lobby_lp − 700)/2000)",
+      desc: "Adjusts CSS for lobby quality. Higher LP lobbies → small uplift; soft 400-LP lobbies → small discount. Anchored at 700 LP." },
+    { term: "Sample factor", formula: "0.5 + 0.5 · min(1, games / MIN_GAMES)",
+      desc: "Reduces confidence in CSS for small samples. <MIN_GAMES games → score multiplied by 0.5..1.0." },
+  ],
+  "Lane phase metrics": [
+    { term: "GD@15", formula: "player_gold(15') − opponent_gold(15')",
+      desc: "Gold differential at 15 min vs same-role opponent. Lane dominance proxy. Typical Challenger range: ±300, big gaps reach ±1000+." },
+    { term: "XPD@15", formula: "player_xp(15') − opponent_xp(15')",
+      desc: "XP differential — captures level leads even when gold is matched (e.g. roams that snowball via levels)." },
+    { term: "CSD@15", formula: "player_cs(15') − opponent_cs(15')",
+      desc: "CS differential — pure laning skill. Less affected by skirmishes than GD." },
+    { term: "CS/min", formula: "total_cs / game_minutes",
+      desc: "Farming consistency. Pro range: 8-10 (carries), 6-7 (junglers), 0.5-2 (supports)." },
+  ],
+  "Combat & impact": [
+    { term: "Damage share", formula: "player_dmg / sum(team_dmg)",
+      desc: "Share of team damage to champions. ADC ≈ 30%, mid ≈ 27%, top ≈ 22%, jungle ≈ 18%, support ≈ 10%." },
+    { term: "DPM",       formula: "damage_to_champs / minutes",
+      desc: "Damage per minute. Threat level over time, less duration-biased than total damage." },
+    { term: "KP",        formula: "(kills + assists) / team_kills",
+      desc: "Kill participation. Engagement in fights. Mids/supports lead at 60%+, ADCs around 55%." },
+    { term: "KDA",       formula: "(kills + assists) / max(deaths, 1)",
+      desc: "Classic ratio. Use as a sanity check, not a primary signal — stomps inflate it dramatically." },
+    { term: "Solo kills", formula: "kills with no assists in event",
+      desc: "1v1 outplays. Strong indicator of mechanical edge for top/mid laners." },
+  ],
+  "Vision & objectives": [
+    { term: "Vision/min (VSPM)", formula: "vision_score / minutes",
+      desc: "Vision contribution per minute. Critical for SUP (target 2.0+); 1.0+ for solo-laners." },
+    { term: "Wards placed/min", formula: "wards_placed / minutes",
+      desc: "Offensive vision setup. Trinket usage discipline." },
+    { term: "Objective dmg",    formula: "damage to drakes/heralds/baron/towers",
+      desc: "Indicates jungle priority and team objective focus." },
+    { term: "Early deaths",     formula: "deaths before 14:00",
+      desc: "Lane-phase mistakes. High value = punished often / overextended." },
+  ],
+  "Pro / scouting filters": [
+    { term: "Pro",            desc: "Lolpros has a profile for this player. Click their View page to see career path + social links." },
+    { term: "FA (Free Agent)", desc: "Pro on Lolpros but not currently rostered. Top scouting target." },
+    { term: "Residency",      desc: "Player's Riot residency (Europe / Korea / North America). Affects regional eligibility for LEC/LCK/LCS." },
+    { term: "Contract end",   desc: "When contracts data is public (Leaguepedia). Filter 'within 90d' surfaces upcoming free agents." },
+    { term: "Lobby LP",       desc: "Mean LP of all 10 participants in a player's matches. Used to discount soft-lobby grinds." },
+  ],
+};
+
+function openGlossary() {
+  const body = document.getElementById('glossary-body');
+  body.innerHTML = Object.entries(GLOSSARY).map(([section, entries]) => `
+    <div class="glossary-section">
+      <h4>${section}</h4>
+      ${entries.map(e => `
+        <div class="glossary-entry">
+          <span class="term">${e.term}</span>
+          ${e.formula ? `<span class="formula">${e.formula}</span>` : ''}
+          <div class="desc">${e.desc}</div>
+        </div>
+      `).join('')}
+    </div>
+  `).join('');
+  document.getElementById('glossary-panel').classList.add('open');
+  document.getElementById('glossary-backdrop').classList.add('open');
+}
+function closeGlossary() {
+  document.getElementById('glossary-panel').classList.remove('open');
+  document.getElementById('glossary-backdrop').classList.remove('open');
+}
+document.getElementById('glossary-btn').addEventListener('click', openGlossary);
+document.getElementById('glossary-close').addEventListener('click', closeGlossary);
+document.getElementById('glossary-backdrop').addEventListener('click', closeGlossary);
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeGlossary();
+});
+
 /* ---------------- ROUTER ---------------- */
 const app = document.getElementById('app');
 const navLinks = document.querySelectorAll('nav a');
@@ -460,20 +545,20 @@ async function loadPlayer(puuid) {
         <canvas id="radar" height="280"></canvas>
       </div>
       <div class="card">
-        <h3>Aggregate stats</h3>
-        <div class="stat-row"><span class="label">GD@15</span><span class="value">${stats.gd15}</span></div>
-        <div class="stat-row"><span class="label">XPD@15</span><span class="value">${stats.xpd15}</span></div>
-        <div class="stat-row"><span class="label">CSD@15</span><span class="value">${stats.csd15}</span></div>
-        <div class="stat-row"><span class="label">CS / min</span><span class="value">${stats.cspm}</span></div>
-        <div class="stat-row"><span class="label">DPM</span><span class="value">${stats.dpm}</span></div>
-        <div class="stat-row"><span class="label">Damage share</span><span class="value">${(stats.dmg_share*100).toFixed(1)}%</span></div>
-        <div class="stat-row"><span class="label">Kill participation</span><span class="value">${(stats.kp*100).toFixed(1)}%</span></div>
-        <div class="stat-row"><span class="label">KDA</span><span class="value">${stats.kda}</span></div>
-        <div class="stat-row"><span class="label">Vision / min</span><span class="value">${stats.vspm}</span></div>
-        <div class="stat-row"><span class="label">Wards placed / min</span><span class="value">${stats.wpm}</span></div>
-        <div class="stat-row"><span class="label">Solo kills / game</span><span class="value">${stats.solo_kills}</span></div>
-        <div class="stat-row"><span class="label">Early deaths / game</span><span class="value">${stats.early_deaths}</span></div>
-        <div class="stat-row"><span class="label">Champion pool (≥3 games)</span><span class="value">${stats.champion_pool_size}</span></div>
+        <h3>Aggregate stats <a href="#" class="muted" id="open-glossary-2" style="font-size:11px;font-weight:400;text-decoration:none;">📖 explain</a></h3>
+        <div class="stat-row" title="Gold differential at 15min vs same-role opponent. Lane dominance proxy."><span class="label">GD@15</span><span class="value">${stats.gd15}</span></div>
+        <div class="stat-row" title="XP differential at 15min — captures level leads from roams"><span class="label">XPD@15</span><span class="value">${stats.xpd15}</span></div>
+        <div class="stat-row" title="CS differential at 15min — pure laning skill"><span class="label">CSD@15</span><span class="value">${stats.csd15}</span></div>
+        <div class="stat-row" title="Creep score per minute — farming consistency"><span class="label">CS / min</span><span class="value">${stats.cspm}</span></div>
+        <div class="stat-row" title="Damage to champions per minute"><span class="label">DPM</span><span class="value">${stats.dpm}</span></div>
+        <div class="stat-row" title="Share of team's total damage to champions"><span class="label">Damage share</span><span class="value">${(stats.dmg_share*100).toFixed(1)}%</span></div>
+        <div class="stat-row" title="(kills + assists) / team kills"><span class="label">Kill participation</span><span class="value">${(stats.kp*100).toFixed(1)}%</span></div>
+        <div class="stat-row" title="(kills + assists) / max(deaths, 1)"><span class="label">KDA</span><span class="value">${stats.kda}</span></div>
+        <div class="stat-row" title="Vision score per minute"><span class="label">Vision / min</span><span class="value">${stats.vspm}</span></div>
+        <div class="stat-row" title="Wards placed per minute"><span class="label">Wards placed / min</span><span class="value">${stats.wpm}</span></div>
+        <div class="stat-row" title="Kills with no assistants — 1v1 outplays"><span class="label">Solo kills / game</span><span class="value">${stats.solo_kills}</span></div>
+        <div class="stat-row" title="Deaths before 14:00 — laning mistakes / overextends"><span class="label">Early deaths / game</span><span class="value">${stats.early_deaths}</span></div>
+        <div class="stat-row" title="Distinct champions with ≥3 games on the sample"><span class="label">Champion pool (≥3 games)</span><span class="value">${stats.champion_pool_size}</span></div>
       </div>
     </div>
 
@@ -522,15 +607,16 @@ async function loadPlayer(puuid) {
 
     <div class="grid-2">
       <div class="card">
-        <h3>Score breakdown</h3>
+        <h3>Score breakdown <a href="#" class="muted" id="open-glossary-3" style="font-size:11px;font-weight:400;text-decoration:none;">📖 explain</a></h3>
+        <p class="muted" style="margin-top:0;font-size:11px;">8 categories scored 0-100 vs Challenger pool. 50 = par with median. Bar shows category score; CSS = weighted sum (weights vary by role).</p>
         ${RADAR_AXES.map(k => `
-          <div class="bar-row">
+          <div class="bar-row" title="${k} category">
             <span class="lab">${k}</span>
             <div class="bar"><span style="width:${(cats[k]||0).toFixed(0)}%"></span></div>
             <span class="num">${(cats[k]||0).toFixed(0)}</span>
           </div>
         `).join('')}
-        <p class="muted" style="margin-top:10px;">Sample factor: ${agg.breakdown?.sample_factor?.toFixed(2) ?? '—'} · Smurf factor: ${agg.breakdown?.smurf_factor?.toFixed(2) ?? '—'}</p>
+        <p class="muted" style="margin-top:10px;">Sample factor: ${agg.breakdown?.sample_factor?.toFixed(2) ?? '—'} · Smurf factor: ${agg.breakdown?.smurf_factor?.toFixed(2) ?? '—'} · Lobby factor: ${agg.breakdown?.lobby_factor?.toFixed(2) ?? '—'}</p>
       </div>
       <div class="card">
         <h3>Scout notes</h3>
@@ -553,6 +639,11 @@ async function loadPlayer(puuid) {
       <div class="card"><p class="muted">Loading LEC roster comparison…</p></div>
     </div>
   `;
+
+  // Inline "explain" links (multiple, namespaced ids would be cleaner — for MVP we just attach to all)
+  document.querySelectorAll('[id^="open-glossary-"]').forEach(el => {
+    el.addEventListener('click', e => { e.preventDefault(); openGlossary(); });
+  });
 
   // Tab switching
   document.querySelectorAll('.tab').forEach(t => {
@@ -589,21 +680,21 @@ async function loadPlayer(puuid) {
       datasets: [{
         label: p.summoner_name,
         data: RADAR_AXES.map(k => cats[k] || 0),
-        backgroundColor: 'rgba(109,140,255,0.25)',
-        borderColor: '#6d8cff',
-        pointBackgroundColor: '#16d9b5',
+        backgroundColor: 'rgba(245,158,11,0.22)',
+        borderColor: '#f59e0b',
+        pointBackgroundColor: '#34d399',
       },{
         label: 'Challenger median (50)',
         data: RADAR_AXES.map(() => 50),
-        backgroundColor: 'rgba(138,147,179,0.05)',
-        borderColor: 'rgba(138,147,179,0.5)',
+        backgroundColor: 'rgba(138,143,153,0.05)',
+        borderColor: 'rgba(138,143,153,0.5)',
         borderDash: [4,4],
         pointRadius: 0,
       }]
     },
     options: {
-      scales: { r: { min: 0, max: 100, grid:{color:'#243056'}, angleLines:{color:'#243056'}, pointLabels:{color:'#e7ecf7'}, ticks:{display:false} } },
-      plugins: { legend: { labels: { color: '#e7ecf7' } } },
+      scales: { r: { min: 0, max: 100, grid:{color:'#2a2e37'}, angleLines:{color:'#2a2e37'}, pointLabels:{color:'#ebeced'}, ticks:{display:false} } },
+      plugins: { legend: { labels: { color: '#ebeced' } } },
     }
   });
 }
@@ -663,7 +754,7 @@ function initCompare() {
     `;
 
     const metrics = ['gd15','xpd15','dmg_share','kp','kda','vspm','solo_kills','cspm'];
-    const colors = ['#6d8cff','#16d9b5','#ffb547','#ff6b8a','#a78bfa'];
+    const colors = ['#f59e0b','#34d399','#a78bfa','#f87171','#60a5fa'];
     const max = metrics.map(m => Math.max(...data.map(d => Math.abs(d.stats[m]||0)),1));
     new Chart(document.getElementById('cmp-radar'), {
       type: 'radar',
@@ -677,8 +768,8 @@ function initCompare() {
         }))
       },
       options: {
-        scales: { r: { min: 0, max: 100, grid:{color:'#243056'}, angleLines:{color:'#243056'}, pointLabels:{color:'#e7ecf7'}, ticks:{display:false} } },
-        plugins: { legend: { labels: { color: '#e7ecf7' } } },
+        scales: { r: { min: 0, max: 100, grid:{color:'#2a2e37'}, angleLines:{color:'#2a2e37'}, pointLabels:{color:'#ebeced'}, ticks:{display:false} } },
+        plugins: { legend: { labels: { color: '#ebeced' } } },
       }
     });
   });

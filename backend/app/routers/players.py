@@ -251,11 +251,6 @@ def get_player(
                 "std_gd15": round(a.std_gd15, 1),
             },
             "breakdown": breakdown,
-            "pepite_score": round(a.pepite_score, 1) if a.pepite_score is not None else None,
-            "pepite_breakdown": (
-                __import__("json").loads(a.pepite_breakdown_json)
-                if a.pepite_breakdown_json else None
-            ),
             "is_rising_star": bool(a.is_rising_star),
         })
 
@@ -414,6 +409,7 @@ def list_players(
     rising_only: bool = Query(default=False, description="Only players tagged is_rising_star"),
     include_unresolved: bool = Query(default=False, description="Include stub players whose Riot name failed to resolve (shown as '(unknown)')"),
     tier: str | None = Query(default=None, description="Filter by latest rank tier: CHALLENGER, GRANDMASTER, MASTER"),
+    smurf: str | None = Query(default=None, description="hide / suspect_only / clean_only — filter by smurf_score"),
     db: Session = Depends(get_db),
 ):
     """Scout leaderboard. Default sort = CSS desc."""
@@ -501,11 +497,22 @@ def list_players(
     if country:
         q = q.filter(PlayerMeta.country == country)
 
+    # Smurf filter — three modes:
+    #   "hide"          → drop everyone with smurf_score >= 0.5 (clean ladder)
+    #   "suspect_only"  → keep only smurf_score >= 0.5 (smurf-hunt mode)
+    #   "clean_only"    → keep only smurf_score < 0.3 (very-clean main accounts)
+    if smurf == "hide":
+        q = q.filter((Player.smurf_score == None) | (Player.smurf_score < 0.5))  # noqa: E711
+    elif smurf == "suspect_only":
+        q = q.filter(Player.smurf_score >= 0.5)
+    elif smurf == "clean_only":
+        q = q.filter((Player.smurf_score == None) | (Player.smurf_score < 0.3))  # noqa: E711
+
     if sort == "css":
         q = q.order_by(desc(PlayerAggregate.css_score))
-    elif sort == "pepite":
-        # Composite scout score — see services/scoring.compute_pepite_score
-        q = q.order_by(desc(PlayerAggregate.pepite_score))
+    elif sort == "smurf":
+        # Strongest smurf candidates first
+        q = q.order_by(desc(Player.smurf_score))
     elif sort == "winrate":
         q = q.order_by(desc(PlayerAggregate.wins * 1.0 / PlayerAggregate.games_played))
     elif sort == "games":
@@ -563,7 +570,7 @@ def list_players(
             "percentile_rank": a.percentile_rank,
             "champion_pool_size": a.champion_pool_size,
             "is_rising_star": bool(a.is_rising_star),
-            "pepite_score": round(a.pepite_score, 1) if a.pepite_score is not None else None,
+            "smurf_score": round(p.smurf_score, 3) if p.smurf_score else None,
         })
         if len(out) >= limit:
             break

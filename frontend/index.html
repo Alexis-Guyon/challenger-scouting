@@ -133,8 +133,8 @@
       </label>
       <label>Sort
         <select id="f-sort">
-          <option value="pepite">💎 Pépite</option>
           <option value="css">CSS Score</option>
+          <option value="smurf">🚨 Smurf score</option>
           <option value="lp">LP</option>
           <option value="winrate">Winrate</option>
           <option value="games">Games</option>
@@ -147,6 +147,14 @@
           <option value="pro">Pros only</option>
           <option value="fa">Free agents</option>
           <option value="amateur">Amateurs only</option>
+        </select>
+      </label>
+      <label>Smurfs
+        <select id="f-smurf">
+          <option value="">Show all</option>
+          <option value="hide">Hide likely smurfs</option>
+          <option value="suspect_only">🚨 Smurfs only</option>
+          <option value="clean_only">✅ Clean accounts only</option>
         </select>
       </label>
       <label>Max age
@@ -189,7 +197,7 @@
             <th title="Champion pool size — distinct champions with ≥3 games">Pool</th>
             <th title="Challenger Scouting Score 0–100. Z-score vs Challenger pool, weighted by role.">CSS</th>
             <th title="Percentile rank within (patch, role) — P95 = top 5%">%ile</th>
-            <th title="Composite scout score: 0.4·percentile + 0.3·lobby_factor + 0.2·rising_trend + 0.1·youth_bonus">💎 Pépite</th>
+            <th title="Smurf likelihood 0–100. Combines low account-level, hot winrate, mechanical z-score, narrow champion pool.">Smurf</th>
             <th></th>
           </tr>
         </thead>
@@ -310,8 +318,8 @@
           <label>Min CSS
             <input id="al-min-css" type="number" placeholder="50" />
           </label>
-          <label>Min Pépite
-            <input id="al-min-pepite" type="number" placeholder="65" />
+          <label>Min Smurf score
+            <input id="al-min-smurf" type="number" placeholder="60" min="0" max="100"/>
           </label>
           <label>Min %ile
             <input id="al-min-pct" type="number" placeholder="90" />

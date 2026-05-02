@@ -195,59 +195,56 @@ function setView(name) {
 }
 navLinks.forEach(a => a.addEventListener('click', e => { e.preventDefault(); setView(a.dataset.view); }));
 
-function pepiteClass(s) {
+// Smurf-likelihood score (0..100). Higher = more suspect.
+function smurfClass(s) {
   if (s == null) return 's-avg';
-  if (s >= 70) return 's-elite';
-  if (s >= 55) return 's-strong';
-  if (s >= 40) return 's-avg';
-  return 's-weak';
+  if (s >= 70) return 's-weak';   // red — strong smurf signal
+  if (s >= 50) return 's-strong'; // amber — suspect
+  if (s >= 30) return 's-avg';    // muted — soft signal
+  return 's-elite';                // green — clean account
 }
-function pepiteBreakdownHTML(agg) {
-  const score = agg.pepite_score;
-  const bd = agg.pepite_breakdown;
-  if (score == null || !bd) {
+function smurfCell(row) {
+  const score = row.smurf_score;
+  if (score == null) return '<span class="muted">—</span>';
+  // Score is stored 0..1; render as 0..100
+  const v = Math.round(score * 100);
+  const cls = smurfClass(v);
+  const prefix = v >= 70 ? '🚨 ' : (v >= 50 ? '⚠️ ' : '');
+  return `<span class="score-pill ${cls}" title="Smurf likelihood — click View for breakdown">${prefix}${v}</span>`;
+}
+function smurfBreakdownHTML(p) {
+  const score = (p.smurf_score == null) ? null : Math.round(p.smurf_score * 100);
+  const signals = p.smurf_signals || null;
+  if (score == null) {
     return '<p class="muted" style="margin:0;font-size:12px;">Not yet computed (run "Recompute scores only" in Admin).</p>';
   }
-  const W = bd.weights || {percentile:0.4, lobby:0.3, rising:0.2, youth:0.1};
-  function row(label, weight, value, contrib, hint) {
+  const cls = smurfClass(score);
+  function row(label, value, hint) {
     const pct = Math.max(0, Math.min(100, value));
     return `
       <div class="bar-row" title="${hint || ''}">
-        <span class="lab">${label} <span class="muted" style="font-size:10px;">×${weight}</span></span>
+        <span class="lab">${label}</span>
         <div class="bar"><span style="width:${pct.toFixed(0)}%"></span></div>
-        <span class="num">${value.toFixed(0)} → ${contrib.toFixed(1)}</span>
+        <span class="num">${value.toFixed(0)}</span>
       </div>
     `;
   }
-  const ageLine = bd.age == null
-    ? '<span class="muted">unknown age (neutral)</span>'
-    : `${bd.age}y → ${bd.youth_pts}`;
+  let contribHTML = '';
+  if (signals && typeof signals === 'object') {
+    contribHTML = Object.entries(signals)
+      .filter(([k, v]) => typeof v === 'number')
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => row(k.replace(/_/g, ' '), v * 100,
+        'Sub-signal contribution (higher = more suspect)'))
+      .join('');
+  }
   return `
     <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px;">
-      <span class="score-pill ${pepiteClass(score)}" style="font-size:15px;padding:4px 12px;">💎 ${score.toFixed(1)}</span>
-      <span class="muted" style="font-size:11px;">composite 0..100 · weighted sum below</span>
+      <span class="score-pill ${cls}" style="font-size:15px;padding:4px 12px;">${score >= 70 ? '🚨 ' : score >= 50 ? '⚠️ ' : ''}${score}</span>
+      <span class="muted" style="font-size:11px;">smurf likelihood 0..100</span>
     </div>
-    ${row('Percentile', W.percentile, bd.percentile, W.percentile * bd.percentile,
-          'Quality vs (patch, role) cohort. 0..100. Half the score lives here.')}
-    ${row('Lobby', W.lobby, bd.lobby_pts, W.lobby * bd.lobby_pts,
-          'Strength of opponents this player faced. Anchored at 1.0 (=50pts).')}
-    ${row('Rising', W.rising, bd.rising_pts, W.rising * bd.rising_pts,
-          'Patch-over-patch CSS uptrend. 100 if explicitly tagged is_rising_star.')}
-    ${row('Youth', W.youth, bd.youth_pts, W.youth * bd.youth_pts,
-          'U21 bonus: 17yo=100, 24yo+=0.')}
-    <div class="muted" style="font-size:11px;margin-top:8px;line-height:1.5;">
-      Lobby factor: <strong style="color:var(--text);">${bd.lobby_factor.toFixed(3)}</strong>
-      · Rising star: ${bd.is_rising_star ? '✅' : '—'}
-      · Age: ${ageLine}
-    </div>
+    ${contribHTML || '<p class="muted" style="font-size:12px;margin:0;">No sub-signal breakdown yet.</p>'}
   `;
-}
-function pepiteCell(score) {
-  if (score == null) return '<span class="muted">—</span>';
-  const cls = pepiteClass(score);
-  // Subtle 💎 prefix for the strong+ tier so they stand out at a glance
-  const prefix = score >= 55 ? '💎 ' : '';
-  return `<span class="score-pill ${cls}" title="Pépite composite — click View for breakdown">${prefix}${score.toFixed(1)}</span>`;
 }
 function scoreClass(s) {
   if (s >= 75) return 's-elite';
@@ -342,6 +339,7 @@ async function loadLeaderboard() {
   const min = document.getElementById('f-min').value || 1;
   const sort = document.getElementById('f-sort').value;
   const proStatus = document.getElementById('f-prostatus').value;
+  const smurfFilter = document.getElementById('f-smurf')?.value || '';
   const maxAge = document.getElementById('f-maxage').value;
   const residency = document.getElementById('f-residency').value;
   const contract = document.getElementById('f-contract').value;
@@ -356,6 +354,7 @@ async function loadLeaderboard() {
   params.set('offset', _lbOffset);
   if (proStatus === 'pro') params.set('pro_only', 'true');
   if (proStatus === 'fa') params.set('fa', 'true');
+  if (smurfFilter) params.set('smurf', smurfFilter);
   // amateur = pro_only=false handled client-side below
   if (maxAge) params.set('max_age', maxAge);
   if (residency) params.set('residency', residency);
@@ -420,7 +419,7 @@ async function loadLeaderboard() {
       <td>${row.champion_pool_size}</td>
       <td><span class="score-pill ${scoreClass(row.css_score)}">${row.css_score}</span></td>
       <td>${row.percentile_rank == null ? '<span class="muted" title="Cohort too small (<10 players) for a meaningful percentile">—</span>' : 'P'+row.percentile_rank}</td>
-      <td>${pepiteCell(row.pepite_score)}</td>
+      <td>${smurfCell(row)}</td>
       <td>
         <span class="star ${watched?'active':''}" data-puuid="${row.puuid}">${watched?'★':'☆'}</span>
         <button data-puuid="${row.puuid}" class="secondary view-player">View</button>
@@ -966,8 +965,8 @@ async function loadPlayer(puuid) {
         <p class="muted" style="margin-top:10px;">Sample factor: ${agg.breakdown?.sample_factor?.toFixed(2) ?? '—'} · Smurf factor: ${agg.breakdown?.smurf_factor?.toFixed(2) ?? '—'} · Lobby factor: ${agg.breakdown?.lobby_factor?.toFixed(2) ?? '—'}</p>
       </div>
       <div class="card">
-        <h3>💎 Pépite breakdown <span class="muted" style="font-size:11px;font-weight:400;">scout-oriented composite</span></h3>
-        ${pepiteBreakdownHTML(agg)}
+        <h3>🚨 Smurf signals <span class="muted" style="font-size:11px;font-weight:400;">multi-signal alt-account detector</span></h3>
+        ${smurfBreakdownHTML(p)}
       </div>
     </div>
 
@@ -1242,7 +1241,7 @@ function initCompare() {
     const div = document.getElementById('cmp-result');
     // Metrics where higher = better
     const HIGHER_IS_BETTER = new Set([
-      'css_score','pepite_score','percentile_rank','winrate','games_played',
+      'css_score','percentile_rank','winrate','games_played',
       'gd15','xpd15','csd15','cspm','dmg_share','dpm','kp','kda','vspm','wpm','solo_kills','champion_pool_size','lp'
     ]);
     function bestIdx(values) {
@@ -1301,7 +1300,6 @@ function initCompare() {
             <table class="compare-table">
               <thead><tr><th>Metric</th>${data.map(metaHeader).join('')}</tr></thead>
               <tbody>
-                ${metricRow('Pépite', 'pepite_score', v => v.toFixed(1))}
                 ${metricRow('CSS', 'css_score', v => v.toFixed(1))}
                 ${metricRow('Percentile', 'percentile_rank', v => 'P' + v)}
                 ${metricRow('Games', 'games_played')}
@@ -1449,7 +1447,7 @@ function initAlerts() {
     if (!name || !webhook) { alert('Name + webhook URL required.'); return; }
     const conditions = {};
     const minCss = document.getElementById('al-min-css').value;     if (minCss) conditions.min_css = +minCss;
-    const minPep = document.getElementById('al-min-pepite').value;  if (minPep) conditions.min_pepite = +minPep;
+    const minSmurf = document.getElementById('al-min-smurf').value; if (minSmurf) conditions.min_smurf = +minSmurf / 100;  // stored 0..1
     const minPct = document.getElementById('al-min-pct').value;     if (minPct) conditions.min_percentile = +minPct;
     const minG   = document.getElementById('al-min-games').value;   if (minG)   conditions.min_games = +minG;
     const maxAge = document.getElementById('al-max-age').value;     if (maxAge) conditions.max_age = +maxAge;

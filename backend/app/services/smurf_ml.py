@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-from ..models import Player, PlayerAggregate, PlayerMeta, RankSnapshot
+from ..models import Player, PlayerAggregate, PlayerMeta, RankSnapshot, SmurfLabel
 
 logger = logging.getLogger(__name__)
 
@@ -88,27 +88,34 @@ def _sigmoid(z: float) -> float:
 # -------------------- Training --------------------
 
 def _train_logistic(X: list[list[float]], y: list[int],
+                    sample_weights: list[float] | None = None,
                     lr: float = 0.1, epochs: int = 300,
                     l2: float = 0.01) -> tuple[list[float], float]:
-    """Plain SGD logistic regression. Returns (weights, bias)."""
+    """Plain SGD logistic regression with optional per-sample weights.
+
+    Manual scout labels (SmurfLabel rows) are passed in with weight 3.0
+    so they outweigh the heuristic-derived self-supervised labels (1.0).
+    """
     n = len(X[0])
     w = [0.0] * n
     b = 0.0
+    if sample_weights is None:
+        sample_weights = [1.0] * len(X)
     rng = random.Random(42)
     for epoch in range(epochs):
         order = list(range(len(X)))
         rng.shuffle(order)
         for i in order:
-            xi, yi = X[i], y[i]
+            xi, yi, wi = X[i], y[i], sample_weights[i]
             z = b + sum(wj * xij for wj, xij in zip(w, xi))
-            err = _sigmoid(z) - yi
+            err = (_sigmoid(z) - yi) * wi
             for j in range(n):
                 w[j] -= lr * (err * xi[j] + l2 * w[j])
             b -= lr * err
     return w, b
 
 
-def _gather_labeled_examples(db: Session) -> tuple[list[list[float]], list[int], list[str]]:
+def _gather_labeled_examples(db: Session) -> tuple[list[list[float]], list[int], list[str], list[float]]:
     """
     Build (X, y, puuids) using self-supervised labels. We blend three label
     sources to get enough data even on a small Challenger-only DB:
@@ -149,9 +156,19 @@ def _gather_labeled_examples(db: Session) -> tuple[list[list[float]], list[int],
             if puuid:
                 alt_puuids.add(puuid)
 
+    # Manual labels — these get 3x weight in training
+    manual_yes: set[str] = set()
+    manual_no: set[str] = set()
+    for lbl in db.query(SmurfLabel).all():
+        if lbl.label:
+            manual_yes.add(lbl.puuid)
+        else:
+            manual_no.add(lbl.puuid)
+
     X: list[list[float]] = []
     y: list[int] = []
     puuids: list[str] = []
+    weights: list[float] = []
 
     for p in db.query(Player).all():
         rank = rank_by_puuid.get(p.puuid)
@@ -191,12 +208,27 @@ def _gather_labeled_examples(db: Session) -> tuple[list[list[float]], list[int],
             or (teacher_score < 0.05 and total_games > 500 and not is_alt and level > 150)
         )
 
+        # Manual labels are the strongest source of truth
+        if p.puuid in manual_yes:
+            X.append(_features_for(level, lp, total_games, wr, max_css, min_pool, max_pool_games))
+            y.append(1)
+            puuids.append(p.puuid)
+            weights.append(3.0)
+            continue
+        if p.puuid in manual_no:
+            X.append(_features_for(level, lp, total_games, wr, max_css, min_pool, max_pool_games))
+            y.append(0)
+            puuids.append(p.puuid)
+            weights.append(3.0)
+            continue
+
         if strong_pos or strong_neg:
             X.append(_features_for(level, lp, total_games, wr, max_css, min_pool, max_pool_games))
             y.append(1 if strong_pos else 0)
             puuids.append(p.puuid)
+            weights.append(1.0)
 
-    return X, y, puuids
+    return X, y, puuids, weights
 
 
 def train_and_score_all(db: Session) -> dict:
@@ -206,9 +238,10 @@ def train_and_score_all(db: Session) -> dict:
 
     Returns training stats.
     """
-    X, y, _ = _gather_labeled_examples(db)
+    X, y, _, sample_weights = _gather_labeled_examples(db)
     pos = sum(y)
     neg = len(y) - pos
+    n_manual = sum(1 for w in sample_weights if w > 1.5)
 
     # Minimum class size to train a non-degenerate LR. In a Challenger-only DB
     # the positive class (smurfs/alts) is naturally small — once the DB grows
@@ -229,8 +262,9 @@ def train_and_score_all(db: Session) -> dict:
             "pos": pos, "neg": neg, "suspect": n,
         }
 
-    weights, bias = _train_logistic(X, y)
-    logger.info("smurf_ml: trained on %d examples (pos=%d neg=%d)", len(y), pos, neg)
+    weights, bias = _train_logistic(X, y, sample_weights=sample_weights)
+    logger.info("smurf_ml: trained on %d examples (pos=%d neg=%d, manual=%d)",
+                len(y), pos, neg, n_manual)
     logger.info("smurf_ml weights: %s", dict(zip(FEATURES, [round(w, 3) for w in weights])))
 
     # Build the same per-player feature batch and score everyone
@@ -276,6 +310,7 @@ def train_and_score_all(db: Session) -> dict:
         "examples": len(y),
         "pos": pos,
         "neg": neg,
+        "manual_labels": n_manual,
         "suspect": suspect,
         "weights": dict(zip(FEATURES, [round(w, 3) for w in weights])),
         "bias": round(bias, 3),

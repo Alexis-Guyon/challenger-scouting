@@ -240,37 +240,107 @@ def score_all_champions(db: Session) -> int:
 
 # ----------------- Smurf detector (multi-signal rule-based) -----------------
 
-def _smurf_signals_for(level: int, lp: int, total_games: int, wr: float,
-                        max_css: float, min_pool: int, max_pool_games: int) -> dict[str, float]:
-    """Pure function — easy to unit test. Returns dict of triggered signals."""
+def _smurf_signals_for(
+    level: int, lp: int, total_games: int, wr: float,
+    max_css: float, min_pool: int, max_pool_games: int,
+    *,
+    # New context (optional, defaults preserve old API)
+    gd15_z: float | None = None,
+    dmgshare_z: float | None = None,
+    kda_z: float | None = None,
+    lp_per_day: float | None = None,
+    narrow_pool_games: int | None = None,
+) -> dict[str, float]:
+    """Pure function — easy to unit test. Returns dict of triggered signals.
+
+    Each signal contributes a positive weight; the smurf score is
+    `min(1.0, sum(values))`. Weights were re-tuned to add up to ~1.5
+    when ALL signals fire (so a "perfect smurf" caps at 1.0 cleanly).
+    """
     signals: dict[str, float] = {}
 
-    # Signal 1 — Account level vs LP (heaviest)
+    # ============================================================
+    # Account-age signals
+    # ============================================================
+
+    # 1. Account level vs LP (heaviest classical signal)
     if level < 50 and lp > 400:
         signals["low_level_high_lp"] = 0.40
     elif level < 80 and lp > 300:
         signals["low_level_high_lp"] = 0.25
     elif level < 120 and lp > 200:
-        signals["low_level_high_lp"] = 0.10
+        signals["low_level_high_lp"] = 0.12
+    elif level < 200 and lp > 500:
+        # Subtle case: level 150-200 in Challenger is still suspicious
+        signals["low_level_high_lp"] = 0.06
 
-    # Signal 2 — Few lifetime ranked games for the rank
+    # 2. Few lifetime ranked games for the rank reached
     if total_games < 50 and lp > 300:
-        signals["low_total_games"] = 0.20
+        signals["low_total_games"] = 0.22
     elif total_games < 200 and lp > 500:
-        signals["low_total_games"] = 0.10
+        signals["low_total_games"] = 0.12
 
-    # Signal 3 — Suspiciously high winrate
+    # ============================================================
+    # Climb-pattern signals
+    # ============================================================
+
+    # 3. Suspiciously high winrate (only meaningful past 30 games)
     if total_games >= 30:
-        if wr > 0.65:
+        if wr > 0.70:
+            signals["wr_too_high"] = 0.22
+        elif wr > 0.65:
             signals["wr_too_high"] = 0.15
         elif wr > 0.60:
-            signals["wr_too_high"] = 0.08
+            signals["wr_too_high"] = 0.07
 
-    # Signal 4 — One-trick at this level
-    if min_pool <= 1 and max_pool_games > 25:
-        signals["one_trick_high_games"] = 0.10
+    # 4. LP velocity — gained more than ~30 LP/day across observed window.
+    #    (Master+ typically gain 0-15 LP/day; >25/day indicates an active
+    #     fresh-climb or session-grind smurf.)
+    if lp_per_day is not None:
+        if lp_per_day > 50:
+            signals["fast_lp_climb"] = 0.18
+        elif lp_per_day > 30:
+            signals["fast_lp_climb"] = 0.10
 
-    # Signal 5 — Strong CSS combined with low level (cross-check)
+    # ============================================================
+    # Champion-pool signals
+    # ============================================================
+
+    # 5. Narrow pool with high games — broader than the old min_pool<=1
+    #    rule; smurfs often play 2-3 mains they've already mastered.
+    if min_pool is not None and min_pool <= 1 and max_pool_games > 25:
+        signals["one_trick_high_games"] = 0.12
+    elif narrow_pool_games is not None and narrow_pool_games > 50 and (min_pool or 99) <= 3:
+        signals["narrow_pool_grind"] = 0.10
+
+    # ============================================================
+    # Mechanical-edge signals (cohort z-scores)
+    # ============================================================
+
+    # 6. GD@15 outlier — z-score against (patch, role). >+1.5σ is rare for
+    #    a fresh main, common for a known mechanical player on alt.
+    if gd15_z is not None:
+        if gd15_z > 2.5:
+            signals["gd15_outlier"] = 0.18
+        elif gd15_z > 1.5:
+            signals["gd15_outlier"] = 0.10
+        elif gd15_z > 1.0:
+            signals["gd15_outlier"] = 0.05
+
+    # 7. Damage-share outlier — pulling >>cohort dmg_share is the classic
+    #    "solo carry" smurf signature.
+    if dmgshare_z is not None and dmgshare_z > 1.5:
+        signals["dmg_share_outlier"] = 0.10
+
+    # 8. KDA outlier — graduated, since KDA is noisier than GD@15.
+    if kda_z is not None and kda_z > 2.0:
+        signals["kda_outlier"] = 0.08
+
+    # ============================================================
+    # CSS cross-check
+    # ============================================================
+
+    # 9. Strong CSS combined with low level
     if level < 60 and max_css > 70:
         signals["high_css_low_level"] = 0.15
     elif level < 60 and max_css > 60:
@@ -279,29 +349,106 @@ def _smurf_signals_for(level: int, lp: int, total_games: int, wr: float,
     return signals
 
 
-def score_all_smurfs(db: Session) -> int:
+def _compute_cohort_zscores(aggs_by_puuid: dict) -> dict:
+    """For every aggregate, compute z-scores of avg_gd15, avg_dmg_share,
+    avg_kda against its (patch, role) cohort. Returns
+    {puuid: {gd15_z, dmgshare_z, kda_z}} keyed on the player's largest agg.
     """
-    Recompute smurf score for every player using batched queries.
-    Returns count of likely smurfs (score > 0.5).
+    from collections import defaultdict
+    from statistics import mean, pstdev
+
+    by_pr: dict[tuple[str, str], list] = defaultdict(list)
+    for puuid, aggs in aggs_by_puuid.items():
+        for a in aggs:
+            by_pr[(a.patch, a.role)].append(a)
+
+    cohort_stats: dict[tuple[str, str], dict] = {}
+    for key, items in by_pr.items():
+        if len(items) < 5:
+            continue  # Too small to derive meaningful z-scores
+        gd15 = [a.avg_gd15 for a in items]
+        dmg = [a.avg_dmg_share for a in items]
+        kda = [a.avg_kda for a in items]
+        cohort_stats[key] = {
+            "gd15_mean": mean(gd15), "gd15_std": pstdev(gd15) or 1.0,
+            "dmg_mean": mean(dmg),   "dmg_std":  pstdev(dmg)  or 0.001,
+            "kda_mean": mean(kda),   "kda_std":  pstdev(kda)  or 0.001,
+        }
+
+    out: dict[str, dict] = {}
+    for puuid, aggs in aggs_by_puuid.items():
+        if not aggs:
+            continue
+        biggest = max(aggs, key=lambda a: a.games_played)
+        cs = cohort_stats.get((biggest.patch, biggest.role))
+        if not cs:
+            continue
+        out[puuid] = {
+            "gd15_z":     (biggest.avg_gd15      - cs["gd15_mean"]) / cs["gd15_std"],
+            "dmgshare_z": (biggest.avg_dmg_share - cs["dmg_mean"])  / cs["dmg_std"],
+            "kda_z":      (biggest.avg_kda       - cs["kda_mean"])  / cs["kda_std"],
+        }
+    return out
+
+
+def _compute_lp_velocity(rank_history: list) -> float | None:
+    """Given a list of RankSnapshot rows for one puuid sorted by date desc,
+    return LP gained per day across the observed window.
+
+    Tier ladders (Challenger/GM/Master) all use the same LP scale, so we
+    can use the raw LP delta. With <2 snapshots or <1 day of observation
+    we return None (insufficient signal)."""
+    if len(rank_history) < 2:
+        return None
+    newest = rank_history[0]
+    oldest = rank_history[-1]
+    if not newest.snapshot_date or not oldest.snapshot_date:
+        return None
+    days = (newest.snapshot_date - oldest.snapshot_date).total_seconds() / 86400.0
+    if days < 1.0:
+        return None
+    return (newest.lp - oldest.lp) / days
+
+
+def score_all_smurfs(db: Session) -> int:
+    """Recompute smurf score for every player.
+
+    Strengthened in 2026:
+      - GD@15 / dmg_share / KDA z-scores against (patch, role) cohort
+      - LP velocity from RankSnapshot history
+      - Manual SmurfLabel rows from scouts override the heuristic
+        (consensus ≥1 → +0.30, consensus 'not smurf' → cap at 0.30)
     """
     import json
-    from sqlalchemy import func
     from collections import defaultdict
+    from ..models import SmurfLabel
 
-    # Batch 1: latest rank per puuid (single query, group by puuid taking max snapshot_date)
-    rank_by_puuid: dict[str, RankSnapshot] = {}
+    # Batch 1: ALL rank snapshots grouped by puuid (newest first)
+    history_by_puuid: dict[str, list[RankSnapshot]] = defaultdict(list)
     for r in db.query(RankSnapshot).order_by(RankSnapshot.snapshot_date.desc()).all():
-        if r.puuid not in rank_by_puuid:
-            rank_by_puuid[r.puuid] = r
+        history_by_puuid[r.puuid].append(r)
 
-    # Batch 2: all aggregates grouped by puuid
+    # Batch 2: aggregates grouped by puuid
     aggs_by_puuid: dict[str, list[PlayerAggregate]] = defaultdict(list)
     for a in db.query(PlayerAggregate).all():
         aggs_by_puuid[a.puuid].append(a)
 
+    # Batch 3: cohort z-scores
+    z_by_puuid = _compute_cohort_zscores(aggs_by_puuid)
+
+    # Batch 4: manual labels (cross-scout consensus)
+    label_yes: dict[str, int] = defaultdict(int)
+    label_no: dict[str, int] = defaultdict(int)
+    for lbl in db.query(SmurfLabel).all():
+        if lbl.label:
+            label_yes[lbl.puuid] += 1
+        else:
+            label_no[lbl.puuid] += 1
+
     suspect = 0
     for p in db.query(Player).all():
-        rank = rank_by_puuid.get(p.puuid)
+        history = history_by_puuid.get(p.puuid, [])
+        rank = history[0] if history else None
         lp = rank.lp if rank else 0
         total_games = (rank.wins + rank.losses) if rank else 0
         wr = (rank.wins / total_games) if total_games else 0
@@ -313,11 +460,33 @@ def score_all_smurfs(db: Session) -> int:
             biggest = max(aggs, key=lambda a: a.games_played)
             min_pool = biggest.champion_pool_size
             max_pool_games = biggest.games_played
+            narrow_pool_games = sum(a.games_played for a in aggs if (a.champion_pool_size or 99) <= 3)
         else:
-            min_pool, max_pool_games = 99, 0
+            min_pool, max_pool_games, narrow_pool_games = 99, 0, 0
 
-        signals = _smurf_signals_for(level, lp, total_games, wr, max_css, min_pool, max_pool_games)
-        score = min(1.0, sum(signals.values()))
+        z = z_by_puuid.get(p.puuid, {})
+        lp_per_day = _compute_lp_velocity(history)
+
+        signals = _smurf_signals_for(
+            level, lp, total_games, wr, max_css, min_pool, max_pool_games,
+            gd15_z=z.get("gd15_z"),
+            dmgshare_z=z.get("dmgshare_z"),
+            kda_z=z.get("kda_z"),
+            lp_per_day=lp_per_day,
+            narrow_pool_games=narrow_pool_games,
+        )
+
+        # Manual labels — strong override.
+        # Yes-votes net of no-votes; capped at +0.40 to prevent label
+        # spam from creating false certainty.
+        net_label = label_yes.get(p.puuid, 0) - label_no.get(p.puuid, 0)
+        if net_label > 0:
+            signals["manual_label_yes"] = min(0.40, 0.20 * net_label)
+        elif net_label < 0:
+            # Negative consensus suppresses the score
+            signals["manual_label_no"] = -0.30
+
+        score = max(0.0, min(1.0, sum(signals.values())))
         p.smurf_score = score
         p.smurf_signals = json.dumps(signals) if signals else None
         p.smurf_flag = score > 0.5
@@ -432,97 +601,6 @@ def score_all(db: Session, min_games: int) -> int:
             for rank, (a, _) in enumerate(items):
                 a.percentile_rank = round(100 * rank / (total - 1), 1)
 
-    # Pépite composite score (0..100) — combines percentile, lobby factor,
-    # rising-star tag, and youth bonus. See compute_pepite_score().
-    for a in aggs:
-        score, breakdown = compute_pepite_score(db, a)
-        a.pepite_score = score
-        import json as _json
-        a.pepite_breakdown_json = _json.dumps(breakdown)
-
     db.commit()
     logger.info("scored %d player aggregates", len(aggs))
     return len(aggs)
-
-
-# ============================================================
-# "Pépite" composite — a scout-oriented composite score.
-# ============================================================
-
-def compute_pepite_score(db: Session, agg: PlayerAggregate) -> tuple[float, dict]:
-    """Composite 0..100 score that surfaces hidden talent.
-
-    Recipe:
-        0.40 * percentile         — relative quality vs (patch, role) cohort
-        0.30 * lobby_factor_pts   — does he carry STRONG lobbies?
-        0.20 * rising_pts         — patch-over-patch CSS uptrend
-        0.10 * youth_pts          — under-21 bonus
-
-    Each sub-component is normalized to 0..100. Players without enough
-    data on a sub-score get a neutral 50, never 0 — so unknown age
-    doesn't wreck the score for solid amateurs whose Lolpros entry is
-    missing.
-
-    Returns (score, breakdown_dict) for transparency in the UI.
-    """
-    from ..models import PlayerMeta
-
-    # 1. Percentile component (0..100). If cohort was too small we fall
-    #    back to a neutral 50.
-    percentile = agg.percentile_rank if agg.percentile_rank is not None else 50.0
-
-    # 2. Lobby factor — anchored at 1.0 (neutral). Range 0.90..1.10.
-    #    Map to 0..100 with 1.0 → 50, 1.10 → 100, 0.90 → 0.
-    lobby_factor = _lobby_factor_for(db, agg)
-    lobby_pts = max(0.0, min(100.0, (lobby_factor - 0.90) * 500.0))
-
-    # 3. Rising-star pts: 100 if explicitly tagged is_rising_star, else
-    #    we approximate by looking at the most-recent CSS delta vs the
-    #    previous patch in CSSSnapshot history. Default 50 (neutral).
-    rising_pts = 50.0
-    if agg.is_rising_star:
-        rising_pts = 100.0
-    else:
-        from ..models import CSSSnapshot
-        snaps = (
-            db.query(CSSSnapshot)
-            .filter_by(puuid=agg.puuid, role=agg.role)
-            .order_by(CSSSnapshot.snapshot_at.desc())
-            .limit(3).all()
-        )
-        if len(snaps) >= 2:
-            delta = snaps[0].css_score - snaps[-1].css_score
-            # +10 CSS over 3 snapshots = great → 90 pts; -10 = 10 pts; 0 = 50.
-            rising_pts = max(0.0, min(100.0, 50.0 + delta * 4.0))
-
-    # 4. Youth bonus — a 17-year-old prospect is GOLD; >=24 is "set",
-    #    less of a development target. Linear from 17 → 100, 24 → 0.
-    meta = db.get(PlayerMeta, agg.puuid)
-    age = meta.age if meta and meta.age else None
-    if age is None:
-        youth_pts = 50.0  # unknown — neutral
-    elif age <= 17:
-        youth_pts = 100.0
-    elif age >= 24:
-        youth_pts = 0.0
-    else:
-        youth_pts = round((24 - age) / (24 - 17) * 100, 1)
-
-    score = (
-        0.40 * percentile
-        + 0.30 * lobby_pts
-        + 0.20 * rising_pts
-        + 0.10 * youth_pts
-    )
-
-    breakdown = {
-        "percentile": round(percentile, 1),
-        "lobby_factor": round(lobby_factor, 3),
-        "lobby_pts": round(lobby_pts, 1),
-        "rising_pts": round(rising_pts, 1),
-        "youth_pts": round(youth_pts, 1),
-        "age": age,
-        "is_rising_star": bool(agg.is_rising_star),
-        "weights": {"percentile": 0.40, "lobby": 0.30, "rising": 0.20, "youth": 0.10},
-    }
-    return round(score, 1), breakdown

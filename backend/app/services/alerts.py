@@ -291,7 +291,7 @@ def _player_matches_conditions(p: Player, agg: PlayerAggregate, meta: PlayerMeta
 
     if "min_css" in conditions and not _cmp(agg.css_score, op_mod.ge, conditions["min_css"]):
         return False
-    if "min_pepite" in conditions and not _cmp(agg.pepite_score, op_mod.ge, conditions["min_pepite"]):
+    if "min_smurf" in conditions and not _cmp(p.smurf_score, op_mod.ge, conditions["min_smurf"]):
         return False
     if "min_percentile" in conditions and not _cmp(agg.percentile_rank, op_mod.ge, conditions["min_percentile"]):
         return False
@@ -364,8 +364,8 @@ def run_alert_rules(db: Session) -> int:
             tier = latest_tier.get(p.puuid, "—")
             meta = metas.get(p.puuid)
             age = meta.age if meta and meta.age else "?"
-            pepite = f"💎{agg.pepite_score:.1f}" if agg.pepite_score else ""
-            lines.append(f"• **{p.summoner_name}** ({tier}, {age}y) {agg.role} — CSS {agg.css_score:.1f} {pepite}")
+            smurf = f"🚨{int(p.smurf_score*100)}" if p.smurf_score and p.smurf_score >= 0.5 else ""
+            lines.append(f"• **{p.summoner_name}** ({tier}, {age}y) {agg.role} — CSS {agg.css_score:.1f} {smurf}")
         more = f"\n_+{len(matches)-10} more_" if len(matches) > 10 else ""
         content = f"🔔 **{rule.name}** — {len(matches)} match{'es' if len(matches)>1 else ''}\n" + "\n".join(lines) + more
 

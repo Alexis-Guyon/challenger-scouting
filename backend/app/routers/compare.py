@@ -44,7 +44,7 @@ def compare_players(
             "winrate": round((agg.wins / agg.games_played * 100) if agg.games_played else 0, 1),
             "css_score": round(agg.css_score, 1),
             "percentile_rank": agg.percentile_rank,
-            "pepite_score": round(agg.pepite_score, 1) if agg.pepite_score is not None else None,
+            "smurf_score": round(p.smurf_score, 3) if p.smurf_score is not None else None,
             "is_rising_star": bool(agg.is_rising_star),
             "tier": rank.tier if rank else None,
             "lp": rank.lp if rank else None,

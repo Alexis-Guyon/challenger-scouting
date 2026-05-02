@@ -417,8 +417,52 @@ def list_players(
 
     min_games = min_games if min_games is not None else settings.min_games
 
+    # ---- ONE row per puuid (SQL-level dedup) ----
+    # A player has multiple PlayerAggregate rows (one per patch × role). The
+    # leaderboard wants ONE row per player (their "primary" aggregate, i.e.
+    # the one with the most games on the requested filter). The previous
+    # version did this dedup in Python AFTER OFFSET/LIMIT, which broke
+    # pagination — the same puuid could land at the end of page N and again
+    # at the start of page N+1 because OFFSET counts raw rows, not deduped.
+    # Reported case: HOPE#EVE at rank 150 (page 3) AND 151 (page 4).
+    #
+    # Fix: pre-filter aggregates that match the role/patch/min_games
+    # constraints, then for each puuid keep only the aggregate with
+    # MAX(games_played) (id as tiebreaker). Pagination then operates on
+    # already-unique rows.
+    from sqlalchemy import func as _func
+
+    base_filter = db.query(PlayerAggregate.id).filter(
+        PlayerAggregate.games_played >= min_games
+    )
+    if role:
+        base_filter = base_filter.filter(PlayerAggregate.role == role.upper())
+    if patch:
+        base_filter = base_filter.filter(PlayerAggregate.patch == patch)
+
+    # Pick ONE aggregate per puuid: the one that maximizes
+    # `games_played * 1_000_000 + id`. With max(id)=24k and max(games)=95
+    # this composite is collision-free per puuid (id < 1M is the invariant).
+    # Tiebreaker is "highest id wins" → newest aggregate, which is also the
+    # most desirable when patches tie.
+    rank_expr = (PlayerAggregate.games_played * 1_000_000 + PlayerAggregate.id)
+    primary = (
+        db.query(
+            PlayerAggregate.puuid.label("puuid"),
+            _func.max(rank_expr).label("rank_val"),
+        )
+        .filter(PlayerAggregate.id.in_(base_filter.subquery()))
+        .group_by(PlayerAggregate.puuid)
+        .subquery()
+    )
+
     q = (
         db.query(PlayerAggregate, Player)
+        .join(
+            primary,
+            (primary.c.puuid == PlayerAggregate.puuid)
+            & (primary.c.rank_val == (PlayerAggregate.games_played * 1_000_000 + PlayerAggregate.id)),
+        )
         .join(Player, PlayerAggregate.puuid == Player.puuid)
         .outerjoin(PlayerMeta, PlayerMeta.puuid == Player.puuid)
     )
@@ -549,16 +593,15 @@ def list_players(
     else:
         q = q.order_by(desc(PlayerAggregate.css_score))
 
-    # Total count for pagination — same query without limit/offset
+    # Total count for pagination — same query without limit/offset.
+    # Each row in `q` is now guaranteed to be one-per-puuid by the
+    # `primary` subquery join, so SQL OFFSET/LIMIT translates directly
+    # into deduped pagination (no +buffer +Python dedup needed).
     total = q.count()
 
-    rows = q.offset(offset).limit(limit + 50).all()  # +50 buffer for de-dup loss
-    seen = set()
+    rows = q.offset(offset).limit(limit).all()
     out = []
     for a, p in rows:
-        if p.puuid in seen:
-            continue
-        seen.add(p.puuid)
         out.append({
             **_serialize_player(p, db),
             "patch": a.patch,
@@ -572,8 +615,6 @@ def list_players(
             "is_rising_star": bool(a.is_rising_star),
             "smurf_score": round(p.smurf_score, 3) if p.smurf_score else None,
         })
-        if len(out) >= limit:
-            break
     return {
         "total": total,
         "offset": offset,

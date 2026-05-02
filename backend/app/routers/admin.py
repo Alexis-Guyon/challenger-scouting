@@ -33,6 +33,7 @@ def _run_pipeline_job(
     auto_resolve_max: int = 500,
     send_alerts: bool = True,
     tiers: list[str] | None = None,
+    regions: list[str] | None = None,
 ):
     update_job(job_id, status="running", step="ingest")
 
@@ -50,6 +51,7 @@ def _run_pipeline_job(
             matches_per_player=matches_per_player,
             progress_cb=_on_player_done,
             tiers=tiers,
+            regions=regions,
         ))
 
         if auto_resolve_names:
@@ -118,41 +120,55 @@ def start_ingest(
     matches_per_player: int = Query(default=20, ge=1, le=100),
     tiers: str = Query(
         default="challenger",
-        description="Comma-separated tiers to ingest: challenger,grandmaster,master",
+        description="Comma-separated tiers: challenger,grandmaster,master",
+    ),
+    regions: str = Query(
+        default="",
+        description="Comma-separated platforms: euw1,kr,na1,eun1,br1,jp1,oc1,la1,la2,tr1,ru. Empty = settings.platform.",
     ),
     auto_resolve_names: bool = Query(default=True),
     auto_alerts: bool = Query(default=True),
 ):
     """
-    Pull players + their match history. `tiers` lets you ingest GM and Master
-    in addition to Challenger (Riot's three highest tiers; everything below is
-    /entries/by-rank with much heavier pagination — out of scope here).
+    Pull players + their match history.
 
-    `player_limit` is applied PER TIER. So player_limit=200 + tiers=challenger,
-    grandmaster,master = up to 600 players this run.
+    `tiers` selects which league(s) (challenger/grandmaster/master).
+    `regions` selects platform codes (euw1, kr, na1, ...). Empty = the
+    server-configured default (settings.platform). Multi-region runs
+    are sequential (Riot's rate limit is per-key).
 
-    Master is sorted by LP desc and capped to `player_limit` so the strongest
-    Masters land in the DB first (full Master = ~30k entries on EUW, way too
-    much for one run).
+    `player_limit` is applied PER TIER PER REGION — e.g. player_limit=200,
+    tiers=[chall,gm], regions=[euw1,kr] = up to 200×2×2 = 800 players.
     """
+    from ..services.riot_client import PLATFORM_TO_REGION
     tier_list = [t.strip().lower() for t in tiers.split(",") if t.strip()]
-    valid = {"challenger", "grandmaster", "master"}
-    invalid = [t for t in tier_list if t not in valid]
-    if invalid:
+    valid_tiers = {"challenger", "grandmaster", "master"}
+    invalid_t = [t for t in tier_list if t not in valid_tiers]
+    if invalid_t:
         from fastapi import HTTPException
-        raise HTTPException(400, f"unknown tier(s): {invalid}; valid: challenger, grandmaster, master")
+        raise HTTPException(400, f"unknown tier(s): {invalid_t}; valid: challenger, grandmaster, master")
+
+    region_list = [r.strip().lower() for r in regions.split(",") if r.strip()]
+    if region_list:
+        invalid_r = [r for r in region_list if r not in PLATFORM_TO_REGION]
+        if invalid_r:
+            from fastapi import HTTPException
+            raise HTTPException(400, f"unknown region(s): {invalid_r}; valid: {sorted(PLATFORM_TO_REGION.keys())}")
+    else:
+        region_list = None  # ingestion will fall back to settings.platform
 
     job_id = next_job_id("job")
     create_job(job_id, "ingest", params={
         "player_limit": player_limit,
         "matches_per_player": matches_per_player,
         "tiers": tier_list,
+        "regions": region_list,
     })
     background.add_task(
         _run_pipeline_job, job_id, player_limit, matches_per_player,
-        auto_resolve_names, 500, auto_alerts, tier_list,
+        auto_resolve_names, 500, auto_alerts, tier_list, region_list,
     )
-    return {"job_id": job_id, "status": "started", "tiers": tier_list}
+    return {"job_id": job_id, "status": "started", "tiers": tier_list, "regions": region_list}
 
 
 @router.get("/jobs/{job_id}")

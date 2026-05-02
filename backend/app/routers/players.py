@@ -410,6 +410,7 @@ def list_players(
     include_unresolved: bool = Query(default=False, description="Include stub players whose Riot name failed to resolve (shown as '(unknown)')"),
     tier: str | None = Query(default=None, description="Filter by latest rank tier: CHALLENGER, GRANDMASTER, MASTER"),
     smurf: str | None = Query(default=None, description="hide / suspect_only / clean_only — filter by smurf_score"),
+    region: str | None = Query(default=None, description="Filter by Player.region (platform code: euw1, kr, na1, ...)"),
     db: Session = Depends(get_db),
 ):
     """Scout leaderboard. Default sort = CSS desc."""
@@ -540,6 +541,12 @@ def list_players(
         q = q.filter(PlayerMeta.residency == residency)
     if country:
         q = q.filter(PlayerMeta.country == country)
+
+    # Region filter — match Player.region exactly. Comma-separated for OR.
+    if region:
+        codes = [r.strip().lower() for r in region.split(",") if r.strip()]
+        if codes:
+            q = q.filter(Player.region.in_(codes))
 
     # Smurf filter — three modes:
     #   "hide"          → drop everyone with smurf_score >= 0.5 (clean ladder)

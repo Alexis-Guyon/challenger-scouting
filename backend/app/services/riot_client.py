@@ -37,6 +37,44 @@ REGION_HOSTS = {
     "sea": "sea.api.riotgames.com",
 }
 
+# Each platform maps to its match-v5 / account-v1 super-region. Used by the
+# multi-region ingestion to figure out which `region` to call alongside a
+# given `platform`.
+PLATFORM_TO_REGION = {
+    "br1":  "americas",
+    "la1":  "americas",
+    "la2":  "americas",
+    "na1":  "americas",
+    "oc1":  "sea",      # OCE migrated from americas to sea in 2023
+    "kr":   "asia",
+    "jp1":  "asia",
+    "euw1": "europe",
+    "eun1": "europe",
+    "tr1":  "europe",
+    "ru":   "europe",
+}
+
+# Friendly labels for the UI. Not all platforms are equally relevant for
+# scouting — these are the ones with healthy SoloQ ladders + lots of pros.
+PLATFORM_LABELS = {
+    "euw1": "EUW",
+    "kr":   "KR",
+    "na1":  "NA",
+    "eun1": "EUNE",
+    "br1":  "BR",
+    "jp1":  "JP",
+    "oc1":  "OCE",
+    "la1":  "LAN",
+    "la2":  "LAS",
+    "tr1":  "TR",
+    "ru":   "RU",
+}
+
+
+def region_for_platform(platform: str) -> str:
+    """Return the matching match-v5 super-region for a given platform code."""
+    return PLATFORM_TO_REGION.get(platform.lower(), "europe")
+
 
 class RateLimiter:
     """Sliding window for two parallel limits."""
@@ -72,11 +110,27 @@ class RateLimiter:
 
 
 class RiotClient:
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        platform: Optional[str] = None,
+        region: Optional[str] = None,
+        limiter: Optional["RateLimiter"] = None,
+    ):
+        """A region-scoped Riot API client.
+
+        `platform` (e.g. "euw1", "kr") selects the league-v4 / summoner-v4
+        shard. `region` (e.g. "europe", "asia") selects the match-v5 /
+        account-v1 super-region; when omitted, derived from `platform`.
+
+        Multiple clients sharing the same API key SHOULD share a `limiter`
+        — Riot's quota is per-key, not per-host. The default ctor creates
+        a fresh limiter for back-compat with single-region call sites.
+        """
         self.api_key = api_key or settings.riot_api_key
-        self.platform = settings.platform
-        self.region = settings.region
-        self.limiter = RateLimiter()
+        self.platform = (platform or settings.platform).lower()
+        self.region = (region or PLATFORM_TO_REGION.get(self.platform, settings.region))
+        self.limiter = limiter or RateLimiter()
         self._client = httpx.AsyncClient(timeout=20.0, headers={"X-Riot-Token": self.api_key})
 
     async def close(self):

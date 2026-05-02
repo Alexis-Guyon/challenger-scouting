@@ -117,6 +117,22 @@
           <option value="SUP">SUP</option>
         </select>
       </label>
+      <label>Region
+        <select id="f-region">
+          <option value="">All</option>
+          <option value="euw1">EUW</option>
+          <option value="kr">KR</option>
+          <option value="na1">NA</option>
+          <option value="eun1">EUNE</option>
+          <option value="br1">BR</option>
+          <option value="jp1">JP</option>
+          <option value="oc1">OCE</option>
+          <option value="la1">LAN</option>
+          <option value="la2">LAS</option>
+          <option value="tr1">TR</option>
+          <option value="ru">RU</option>
+        </select>
+      </label>
       <label>Tier
         <select id="f-tier">
           <option value="">All</option>
@@ -185,6 +201,7 @@
           <tr>
             <th title="Rank in current view (offset + position)">#</th>
             <th title="Riot ID — gameName#tagLine">Summoner</th>
+            <th title="Account region (platform code)">Reg</th>
             <th title="Pro status from Lolpros: pro / FA / retired / —">Pro</th>
             <th title="Current rostered team (from Lolpros)">Team</th>
             <th title="Age (when birthdate is on Leaguepedia)">Age</th>
@@ -393,6 +410,42 @@
           </label>
           <label style="display:inline-flex;align-items:center;gap:5px;font-size:12px;">
             <input id="a-tier-master" type="checkbox"/> Master
+          </label>
+        </fieldset>
+        <fieldset style="border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12px;max-width:520px;">
+          <legend style="color:var(--muted);padding:0 6px;">Regions</legend>
+          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
+            <input class="a-region" type="checkbox" value="euw1" checked/> EUW
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
+            <input class="a-region" type="checkbox" value="kr"/> KR
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
+            <input class="a-region" type="checkbox" value="na1"/> NA
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
+            <input class="a-region" type="checkbox" value="eun1"/> EUNE
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
+            <input class="a-region" type="checkbox" value="br1"/> BR
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
+            <input class="a-region" type="checkbox" value="jp1"/> JP
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
+            <input class="a-region" type="checkbox" value="oc1"/> OCE
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
+            <input class="a-region" type="checkbox" value="la1"/> LAN
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
+            <input class="a-region" type="checkbox" value="la2"/> LAS
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
+            <input class="a-region" type="checkbox" value="tr1"/> TR
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
+            <input class="a-region" type="checkbox" value="ru"/> RU
           </label>
         </fieldset>
         <button id="a-ingest">Run ingestion</button>

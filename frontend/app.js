@@ -196,6 +196,17 @@ function setView(name) {
 navLinks.forEach(a => a.addEventListener('click', e => { e.preventDefault(); setView(a.dataset.view); }));
 
 // Smurf-likelihood score (0..100). Higher = more suspect.
+// Compact region pill for the ladder + profile header.
+const REGION_LABELS = {
+  euw1:'EUW', kr:'KR', na1:'NA', eun1:'EUNE', br1:'BR', jp1:'JP',
+  oc1:'OCE', la1:'LAN', la2:'LAS', tr1:'TR', ru:'RU',
+};
+function regionBadge(code) {
+  if (!code) return '<span class="muted" style="font-size:11px;">—</span>';
+  const label = REGION_LABELS[code.toLowerCase()] || code.toUpperCase();
+  return `<span class="team-pill" style="font-size:10.5px;letter-spacing:.04em;">${label}</span>`;
+}
+
 function smurfClass(s) {
   if (s == null) return 's-avg';
   if (s >= 70) return 's-weak';   // red — strong smurf signal
@@ -334,6 +345,7 @@ async function toggleWatch(puuid, btn) {
 
 async function loadLeaderboard() {
   const role = document.getElementById('f-role').value;
+  const region = document.getElementById('f-region')?.value || '';
   const tier = document.getElementById('f-tier').value;
   const patch = document.getElementById('f-patch').value;
   const min = document.getElementById('f-min').value || 1;
@@ -346,6 +358,7 @@ async function loadLeaderboard() {
 
   const params = new URLSearchParams();
   if (role) params.set('role', role);
+  if (region) params.set('region', region);
   if (tier) params.set('tier', tier);
   if (patch) params.set('patch', patch);
   params.set('min_games', min);
@@ -398,7 +411,7 @@ async function loadLeaderboard() {
   document.getElementById('lb-last').onclick  = () => { _lbOffset = (totalPages - 1) * _lbPageSize; loadLeaderboard(); };
 
   if (!data.length) {
-    tbody.innerHTML = `<tr><td colspan="16" class="muted" style="text-align:center;padding:30px;">No players match these filters.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="17" class="muted" style="text-align:center;padding:30px;">No players match these filters.</td></tr>`;
     return;
   }
   data.forEach((row, i) => {
@@ -407,6 +420,7 @@ async function loadLeaderboard() {
     tr.innerHTML = `
       <td>${_lbOffset + i + 1}</td>
       <td><strong>${row.summoner_name || '(unknown)'}</strong> ${smurfBadge(row)}${risingBadge(row)}</td>
+      <td>${regionBadge(row.region)}</td>
       <td>${proBadge(row)}</td>
       <td>${teamCell(row)}</td>
       <td>${ageCell(row)}</td>
@@ -857,7 +871,7 @@ async function loadPlayer(puuid) {
         ${headerAvatar}
         <div style="flex:1;min-width:0;">
           <h2 style="margin:0 0 2px;">${p.summoner_name} ${smurfBadge(p)} <span class="star ${watched?'active':''}" id="profile-star" data-puuid="${puuid}" style="font-size:22px;margin-left:8px;">${watched?'★':'☆'}</span> <button id="smurf-label-btn" class="secondary" style="margin-left:6px;font-size:11px;padding:4px 10px;" title="Manually label this player as a smurf (or NOT a smurf)">👁 Smurf?</button></h2>
-          <div class="muted">${(p.region||'').toUpperCase()} · ${tierBadge(p.tier)} ${p.lp != null ? p.lp + ' LP' : ''} · Account lvl ${p.account_level || '?'}</div>
+          <div class="muted">${regionBadge(p.region)} · ${tierBadge(p.tier)} ${p.lp != null ? p.lp + ' LP' : ''} · Account lvl ${p.account_level || '?'}</div>
           <div style="margin-top:6px;font-size:13px;">${metaLine}</div>
         </div>
       </div>
@@ -1487,11 +1501,13 @@ function initAdmin() {
     if (document.getElementById('a-tier-grandmaster').checked) tiers.push('grandmaster');
     if (document.getElementById('a-tier-master').checked) tiers.push('master');
     if (!tiers.length) { alert('Select at least one tier (Challenger / GM / Master).'); return; }
+    const regions = Array.from(document.querySelectorAll('.a-region:checked')).map(el => el.value);
+    if (!regions.length) { alert('Select at least one region.'); return; }
     const progressBar = document.getElementById('a-progress');
     progressBar.style.display = 'block';
     progressBar.textContent = 'Starting…';
-    log.textContent = `Starting ingest — tiers: ${tiers.join(', ')} · ${players}/tier × ${matches} matches\n`;
-    const r = await API(`/admin/ingest?player_limit=${players}&matches_per_player=${matches}&tiers=${tiers.join(',')}`, { method: 'POST' });
+    log.textContent = `Starting ingest — regions: ${regions.join(',')} · tiers: ${tiers.join(', ')} · ${players}/tier × ${matches} matches\n`;
+    const r = await API(`/admin/ingest?player_limit=${players}&matches_per_player=${matches}&tiers=${tiers.join(',')}&regions=${regions.join(',')}`, { method: 'POST' });
     log.textContent += `Job ${r.job_id} started.\n`;
     const poll = setInterval(async () => {
       try {

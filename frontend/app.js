@@ -27,6 +27,10 @@ async function API(path, opts = {}) {
   const headers = opts.headers || {};
   const token = getToken();
   if (token) headers['Authorization'] = 'Bearer ' + token;
+  // Default Content-Type for JSON string bodies (Pydantic POST/PATCH)
+  if (typeof opts.body === 'string' && !headers['Content-Type']) {
+    headers['Content-Type'] = 'application/json';
+  }
   const url = path.startsWith('http') ? path : (API_BASE + path);
   const res = await fetch(url, { ...opts, headers });
   if (res.status === 401) { showLogin(); throw new Error('unauthorized'); }
@@ -186,6 +190,7 @@ function setView(name) {
   if (name === 'champions') initChampions();
   if (name === 'player') initPlayer();
   if (name === 'compare') initCompare();
+  if (name === 'alerts') initAlerts();
   if (name === 'admin') initAdmin();
 }
 navLinks.forEach(a => a.addEventListener('click', e => { e.preventDefault(); setView(a.dataset.view); }));
@@ -852,7 +857,7 @@ async function loadPlayer(puuid) {
       <div style="display:flex;align-items:center;gap:14px;flex:1;min-width:0;">
         ${headerAvatar}
         <div style="flex:1;min-width:0;">
-          <h2 style="margin:0 0 2px;">${p.summoner_name} ${smurfBadge(p)} <span class="star ${watched?'active':''}" id="profile-star" data-puuid="${puuid}" style="font-size:22px;margin-left:8px;">${watched?'★':'☆'}</span></h2>
+          <h2 style="margin:0 0 2px;">${p.summoner_name} ${smurfBadge(p)} <span class="star ${watched?'active':''}" id="profile-star" data-puuid="${puuid}" style="font-size:22px;margin-left:8px;">${watched?'★':'☆'}</span> <button id="smurf-label-btn" class="secondary" style="margin-left:6px;font-size:11px;padding:4px 10px;" title="Manually label this player as a smurf (or NOT a smurf)">👁 Smurf?</button></h2>
           <div class="muted">${(p.region||'').toUpperCase()} · ${tierBadge(p.tier)} ${p.lp != null ? p.lp + ' LP' : ''} · Account lvl ${p.account_level || '?'}</div>
           <div style="margin-top:6px;font-size:13px;">${metaLine}</div>
         </div>
@@ -1010,6 +1015,14 @@ async function loadPlayer(puuid) {
   document.getElementById('profile-star').addEventListener('click', async (e) => {
     await toggleWatch(puuid, e.target);
   });
+
+  // Smurf labeling — quick 3-state toggle (smurf / not / clear)
+  // Loads current state on demand and shows a chooser
+  const smurfBtn = document.getElementById('smurf-label-btn');
+  if (smurfBtn) {
+    refreshSmurfButton(puuid, smurfBtn);
+    smurfBtn.addEventListener('click', () => openSmurfLabelDialog(puuid, smurfBtn));
+  }
 
   // vs Champion matchup card — lazy load (SQL is light, no need to defer further)
   loadMatchups(puuid, agg.role).catch(err => {
@@ -1359,6 +1372,105 @@ function initCompare() {
   renderChips();
 }
 
+/* ---------------- ALERTS ---------------- */
+function initAlerts() {
+  async function refresh() {
+    const data = await API('/alerts/rules');
+    const rules = data.rules || [];
+    const list = document.getElementById('al-rules');
+    if (!rules.length) {
+      list.innerHTML = '<p class="muted" style="font-size:12px;">No rules yet — create one below.</p>';
+    } else {
+      list.innerHTML = `
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Name</th><th>Conditions</th><th>Last fired</th><th>Status</th><th></th>
+            </tr></thead>
+            <tbody>
+              ${rules.map(r => `
+                <tr data-id="${r.id}">
+                  <td><strong>${r.name}</strong></td>
+                  <td><code style="font-size:11px;color:var(--accent-2);">${JSON.stringify(r.conditions)}</code></td>
+                  <td>${r.last_fired_at ? new Date(r.last_fired_at).toLocaleString() : '<span class="muted">never</span>'}</td>
+                  <td>${r.enabled ? '<span class="score-pill s-elite">enabled</span>' : '<span class="score-pill s-weak">disabled</span>'}</td>
+                  <td>
+                    <button class="secondary al-test" data-id="${r.id}" style="font-size:11px;padding:4px 9px;">Test</button>
+                    <button class="secondary al-toggle" data-id="${r.id}" data-enabled="${r.enabled}" style="font-size:11px;padding:4px 9px;">${r.enabled?'Disable':'Enable'}</button>
+                    <button class="secondary al-delete" data-id="${r.id}" style="font-size:11px;padding:4px 9px;color:var(--danger);">Delete</button>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>`;
+      list.querySelectorAll('.al-test').forEach(b => b.addEventListener('click', async () => {
+        const r = await API(`/alerts/rules/${b.dataset.id}/test`, { method: 'POST' });
+        alert(r.delivered ? '✅ Test sent.' : '❌ Failed: ' + (r.error || 'unknown'));
+      }));
+      list.querySelectorAll('.al-toggle').forEach(b => b.addEventListener('click', async () => {
+        const enabled = b.dataset.enabled !== 'true';
+        await API(`/alerts/rules/${b.dataset.id}`, { method: 'PATCH', body: JSON.stringify({ enabled }) });
+        refresh();
+      }));
+      list.querySelectorAll('.al-delete').forEach(b => b.addEventListener('click', async () => {
+        if (!confirm('Delete this rule?')) return;
+        await API(`/alerts/rules/${b.dataset.id}`, { method: 'DELETE' });
+        refresh();
+      }));
+    }
+
+    const hist = await API('/alerts/history');
+    const hd = document.getElementById('al-history');
+    const rows = hist.history || [];
+    if (!rows.length) {
+      hd.innerHTML = 'No alerts fired yet.';
+    } else {
+      hd.innerHTML = `
+        <table>
+          <thead><tr><th>When</th><th>Rule</th><th>Matches</th><th>Status</th></tr></thead>
+          <tbody>
+            ${rows.map(r => `
+              <tr>
+                <td>${new Date(r.fired_at).toLocaleString()}</td>
+                <td>${r.rule_name}</td>
+                <td>${r.matches ?? '—'}</td>
+                <td>${r.delivered ? '<span class="delta-pos">delivered</span>' : `<span class="delta-neg" title="${r.error||''}">failed</span>`}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>`;
+    }
+  }
+
+  document.getElementById('al-create').addEventListener('click', async () => {
+    const name = document.getElementById('al-name').value.trim();
+    const webhook = document.getElementById('al-webhook').value.trim();
+    if (!name || !webhook) { alert('Name + webhook URL required.'); return; }
+    const conditions = {};
+    const minCss = document.getElementById('al-min-css').value;     if (minCss) conditions.min_css = +minCss;
+    const minPep = document.getElementById('al-min-pepite').value;  if (minPep) conditions.min_pepite = +minPep;
+    const minPct = document.getElementById('al-min-pct').value;     if (minPct) conditions.min_percentile = +minPct;
+    const minG   = document.getElementById('al-min-games').value;   if (minG)   conditions.min_games = +minG;
+    const maxAge = document.getElementById('al-max-age').value;     if (maxAge) conditions.max_age = +maxAge;
+    const role   = document.getElementById('al-role').value;        if (role)   conditions.role = role;
+    const tier   = document.getElementById('al-tier').value;        if (tier)   conditions.tier = tier;
+    if (document.getElementById('al-fa').checked) conditions.is_fa = true;
+    if (document.getElementById('al-rising').checked) conditions.is_rising_star = true;
+    if (document.getElementById('al-pro').checked) conditions.is_pro = true;
+
+    await API('/alerts/rules', {
+      method: 'POST',
+      body: JSON.stringify({ name, webhook_url: webhook, conditions, enabled: true }),
+    });
+    document.getElementById('al-name').value = '';
+    document.getElementById('al-webhook').value = '';
+    refresh();
+  });
+
+  refresh();
+}
+
 /* ---------------- ADMIN ---------------- */
 function initAdmin() {
   const log = document.getElementById('a-log');
@@ -1692,6 +1804,57 @@ document.getElementById('match-modal').addEventListener('click', (e) => {
 });
 
 /* ---------------- TOURNAMENT TAB ---------------- */
+/* ---------- Smurf labeling ---------- */
+async function refreshSmurfButton(puuid, btn) {
+  try {
+    const data = await API(`/smurf/label/${puuid}`);
+    const votes = data.votes_yes + data.votes_no;
+    const consensus = votes
+      ? ` (${data.votes_yes}/${votes} say smurf)`
+      : '';
+    if (data.mine === true) {
+      btn.textContent = '🚨 Marked smurf';
+      btn.style.background = 'rgba(239,68,68,0.15)';
+      btn.style.borderColor = 'rgba(239,68,68,0.4)';
+      btn.title = `You marked this player as a smurf${consensus}`;
+    } else if (data.mine === false) {
+      btn.textContent = '✅ Not smurf';
+      btn.style.background = 'rgba(34,211,164,0.15)';
+      btn.style.borderColor = 'rgba(34,211,164,0.4)';
+      btn.title = `You marked this player as NOT a smurf${consensus}`;
+    } else {
+      btn.textContent = '👁 Smurf?';
+      btn.style.background = '';
+      btn.style.borderColor = '';
+      btn.title = `Click to label${consensus}`;
+    }
+  } catch (e) { /* anonymous read failure is fine */ }
+}
+
+async function openSmurfLabelDialog(puuid, btn) {
+  const choice = prompt(
+    "Label this player:\n  s = smurf\n  n = NOT a smurf\n  c = clear my label\n\nEnter s / n / c:",
+    "s"
+  );
+  if (!choice) return;
+  const c = choice.trim().toLowerCase();
+  try {
+    if (c === 'c') {
+      await API(`/smurf/label/${puuid}`, { method: 'DELETE' });
+    } else if (c === 's' || c === 'y' || c === '1') {
+      await API(`/smurf/label/${puuid}?label=true`, { method: 'POST' });
+    } else if (c === 'n' || c === '0') {
+      await API(`/smurf/label/${puuid}?label=false`, { method: 'POST' });
+    } else {
+      alert('Unknown choice. Use s, n, or c.');
+      return;
+    }
+    refreshSmurfButton(puuid, btn);
+  } catch (e) {
+    alert('Failed: ' + e.message);
+  }
+}
+
 /* ---------- vs CHAMPION matchup card ---------- */
 let _matchupSort = "games";
 

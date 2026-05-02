@@ -256,3 +256,133 @@ def run_alerts_check(db: Session) -> int:
 def send_test_alert() -> int:
     """Manually send a test ping to verify webhook config."""
     return _send("✅ **Challenger Scouting alerts test** — webhook is alive.")
+
+
+# ============================================================
+# Per-user AlertRule engine — runs at end of each pipeline.
+# ============================================================
+
+def _post_webhook(url: str, content: str) -> tuple[bool, str | None]:
+    """Generic Discord/Slack-compatible webhook POST. Returns (ok, error)."""
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            r = client.post(url, json={"content": content[:2000]})
+        if r.status_code >= 300:
+            return False, f"{r.status_code}: {r.text[:200]}"
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _player_matches_conditions(p: Player, agg: PlayerAggregate, meta: PlayerMeta | None,
+                               tier: str | None, conditions: dict) -> bool:
+    """Evaluate a single rule against (player, latest aggregate, meta, latest tier).
+
+    Conditions accepted (all optional, all AND'd together):
+        min_css, min_pepite, min_percentile, min_games
+        max_age, min_age, role, tier (CHALLENGER / GM / MASTER)
+        is_pro (bool), is_fa (bool), is_rising_star (bool)
+    """
+    def _cmp(actual, op, expected):
+        if actual is None:
+            return False
+        return op(actual, expected)
+    import operator as op_mod
+
+    if "min_css" in conditions and not _cmp(agg.css_score, op_mod.ge, conditions["min_css"]):
+        return False
+    if "min_pepite" in conditions and not _cmp(agg.pepite_score, op_mod.ge, conditions["min_pepite"]):
+        return False
+    if "min_percentile" in conditions and not _cmp(agg.percentile_rank, op_mod.ge, conditions["min_percentile"]):
+        return False
+    if "min_games" in conditions and not _cmp(agg.games_played, op_mod.ge, conditions["min_games"]):
+        return False
+    if "role" in conditions and (agg.role or "").upper() != conditions["role"].upper():
+        return False
+    if "tier" in conditions and (tier or "").upper() != conditions["tier"].upper():
+        return False
+    if "max_age" in conditions:
+        age = meta.age if meta else None
+        if age is None or age > conditions["max_age"]:
+            return False
+    if "min_age" in conditions:
+        age = meta.age if meta else None
+        if age is None or age < conditions["min_age"]:
+            return False
+    if "is_pro" in conditions:
+        if bool(meta and meta.is_pro) is not bool(conditions["is_pro"]):
+            return False
+    if "is_fa" in conditions and conditions["is_fa"]:
+        is_fa = bool(meta and meta.is_pro and not meta.current_team and not meta.is_retired)
+        if not is_fa:
+            return False
+    if "is_rising_star" in conditions and conditions["is_rising_star"]:
+        if not agg.is_rising_star:
+            return False
+    return True
+
+
+def run_alert_rules(db: Session) -> int:
+    """Walk every enabled AlertRule, find matching prospects, fire webhooks,
+    log to AlertHistory. Returns count of dispatched alerts."""
+    from ..models import AlertHistory, AlertRule, RankSnapshot
+
+    rules = db.query(AlertRule).filter(AlertRule.enabled == True).all()  # noqa: E712
+    if not rules:
+        return 0
+    metas = {m.puuid: m for m in db.query(PlayerMeta).all()}
+    # latest tier per puuid
+    latest_tier: dict[str, str] = {}
+    for snap in db.query(RankSnapshot).order_by(desc(RankSnapshot.snapshot_date)).all():
+        if snap.puuid not in latest_tier and snap.tier:
+            latest_tier[snap.puuid] = snap.tier
+
+    aggs = (
+        db.query(PlayerAggregate, Player)
+        .join(Player, Player.puuid == PlayerAggregate.puuid)
+        .filter(PlayerAggregate.games_played >= 3)
+        .all()
+    )
+
+    sent = 0
+    now = datetime.now(timezone.utc)
+    for rule in rules:
+        try:
+            conditions = json.loads(rule.conditions_json or "{}")
+        except Exception:
+            conditions = {}
+        matches: list[tuple[Player, PlayerAggregate]] = []
+        for agg, p in aggs:
+            if _player_matches_conditions(p, agg, metas.get(p.puuid), latest_tier.get(p.puuid), conditions):
+                matches.append((p, agg))
+        if not matches:
+            continue
+
+        # Format Discord message
+        lines = []
+        for p, agg in matches[:10]:
+            tier = latest_tier.get(p.puuid, "—")
+            meta = metas.get(p.puuid)
+            age = meta.age if meta and meta.age else "?"
+            pepite = f"💎{agg.pepite_score:.1f}" if agg.pepite_score else ""
+            lines.append(f"• **{p.summoner_name}** ({tier}, {age}y) {agg.role} — CSS {agg.css_score:.1f} {pepite}")
+        more = f"\n_+{len(matches)-10} more_" if len(matches) > 10 else ""
+        content = f"🔔 **{rule.name}** — {len(matches)} match{'es' if len(matches)>1 else ''}\n" + "\n".join(lines) + more
+
+        ok, err = _post_webhook(rule.webhook_url, content)
+        if ok:
+            sent += 1
+            rule.last_fired_at = now
+        # Always log
+        db.add(AlertHistory(
+            rule_id=rule.id,
+            puuid=matches[0][0].puuid if matches else None,
+            summoner_name=matches[0][0].summoner_name if matches else None,
+            payload_json=json.dumps({"content": content, "matches": len(matches)}),
+            delivered=ok,
+            error=err,
+            fired_at=now,
+        ))
+    db.commit()
+    logger.info("alert rules: %d webhooks fired across %d rules", sent, len(rules))
+    return sent

@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .db import Base, engine
 from . import models  # noqa: F401  (register models)
-from .routers import admin, auth, champions, compare, matches, players, tournaments, watchlist
+from .routers import admin, alerts as alerts_router, auth, champions, compare, matches, players, smurf, tournaments, watchlist
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
@@ -37,6 +37,8 @@ app.include_router(tournaments.router)
 app.include_router(tournaments.match_router)
 app.include_router(champions.router)
 app.include_router(matches.router)
+app.include_router(smurf.router)
+app.include_router(alerts_router.router)
 app.include_router(admin.router)
 
 

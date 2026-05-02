@@ -92,9 +92,13 @@ def _run_pipeline_job(
             if send_alerts:
                 update_job(job_id, step="alerts")
                 try:
-                    from ..services.alerts import run_alerts_check
+                    from ..services.alerts import run_alerts_check, run_alert_rules
                     sent = run_alerts_check(db)
-                    update_job(job_id, extras_merge={"alerts_sent": sent})
+                    rules_sent = run_alert_rules(db)
+                    update_job(job_id, extras_merge={
+                        "alerts_sent": sent,
+                        "alert_rules_fired": rules_sent,
+                    })
                 except Exception as exc:
                     logger.warning("alerts check failed: %s", exc)
                     update_job(job_id, extras_merge={"alerts_error": str(exc)})

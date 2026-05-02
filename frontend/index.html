@@ -265,21 +265,25 @@
 
 <template id="tpl-compare">
   <section class="view">
-    <div class="filters">
-      <label>Players (comma-separated puuids)
-        <input id="cmp-input" type="text" placeholder="puuid1,puuid2,puuid3"/>
-      </label>
-      <label>Role
-        <select id="cmp-role">
-          <option value="">Any</option>
-          <option value="TOP">TOP</option>
-          <option value="JGL">JGL</option>
-          <option value="MID">MID</option>
-          <option value="ADC">ADC</option>
-          <option value="SUP">SUP</option>
-        </select>
-      </label>
-      <button id="cmp-go">Compare</button>
+    <div class="card" style="position:relative;">
+      <h3>Compare prospects <span class="muted" style="font-size:11px;font-weight:400;">type a name to add up to 5 players</span></h3>
+      <div class="row" style="margin-top:6px;align-items:center;gap:10px;">
+        <div style="flex:1;position:relative;">
+          <input id="cmp-search" type="text" placeholder="Search Riot ID (gameName#tag)…" style="width:100%;"/>
+          <div id="cmp-suggest" class="suggest"></div>
+        </div>
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;font-weight:600;">Role
+          <select id="cmp-role">
+            <option value="">Any</option>
+            <option value="TOP">TOP</option>
+            <option value="JGL">JGL</option>
+            <option value="MID">MID</option>
+            <option value="ADC">ADC</option>
+            <option value="SUP">SUP</option>
+          </select>
+        </label>
+      </div>
+      <div id="cmp-chips" style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px;"></div>
     </div>
     <div id="cmp-result"></div>
   </section>

@@ -937,6 +937,11 @@ async function loadPlayer(puuid) {
       </div>
     </div>
 
+    <div class="card" id="matchup-card">
+      <h3>vs Champion <span class="muted" style="font-size:11px;font-weight:400;">opponent same role · sortable by games / WR / GD@15</span></h3>
+      <p class="muted" style="margin-top:0;font-size:11px;">Loading matchups…</p>
+    </div>
+
     <div class="card" id="css-history-card" style="display:none;">
       <h3>CSS history <span class="muted" style="font-size:11px;font-weight:400;">evolution across patches</span></h3>
       <canvas id="css-history-chart" height="200"></canvas>
@@ -1004,6 +1009,12 @@ async function loadPlayer(puuid) {
   // Star toggle on profile
   document.getElementById('profile-star').addEventListener('click', async (e) => {
     await toggleWatch(puuid, e.target);
+  });
+
+  // vs Champion matchup card — lazy load (SQL is light, no need to defer further)
+  loadMatchups(puuid, agg.role).catch(err => {
+    const card = document.getElementById('matchup-card');
+    if (card) card.querySelector('p').textContent = 'Failed to load matchups: ' + err.message;
   });
 
   // Recent matches click → deep-dive modal
@@ -1155,53 +1166,197 @@ async function loadNotes(puuid) {
 
 /* ---------------- COMPARE ---------------- */
 function initCompare() {
-  document.getElementById('cmp-go').addEventListener('click', async () => {
-    const raw = document.getElementById('cmp-input').value.trim();
+  // Search-as-you-type compare picker
+  let _cmpRoster = [];   // [{puuid, summoner_name, tier, lp, age, ...}]
+  let _cmpRadar = null;
+  const search = document.getElementById('cmp-search');
+  const suggest = document.getElementById('cmp-suggest');
+  const chipsEl = document.getElementById('cmp-chips');
+
+  function renderChips() {
+    chipsEl.innerHTML = _cmpRoster.length === 0
+      ? '<span class="muted" style="font-size:12px;">No players yet — search above and click a result to add (max 5).</span>'
+      : _cmpRoster.map((r, i) => `
+          <span class="team-pill" style="font-size:12px;padding:5px 10px;background:var(--card-2);border-color:var(--accent);">
+            ${r.summoner_name} <span class="muted" style="margin-left:6px;cursor:pointer;" data-idx="${i}">✕</span>
+          </span>`).join('');
+    chipsEl.querySelectorAll('[data-idx]').forEach(el =>
+      el.addEventListener('click', () => {
+        _cmpRoster.splice(+el.dataset.idx, 1);
+        renderChips();
+        runCompare();
+      })
+    );
+  }
+
+  let _searchTimer = null;
+  search.addEventListener('input', () => {
+    clearTimeout(_searchTimer);
+    _searchTimer = setTimeout(async () => {
+      const q = search.value.trim();
+      if (q.length < 2) { suggest.innerHTML = ''; return; }
+      const data = await API('/players/search?q=' + encodeURIComponent(q));
+      const items = data.slice(0, 8);
+      suggest.innerHTML = items.map(p =>
+        `<div data-puuid="${p.puuid}" data-name="${p.summoner_name}">${p.summoner_name} <span class="muted" style="font-size:11px;">${p.tier || ''}</span></div>`
+      ).join('');
+      suggest.querySelectorAll('div').forEach(d => d.addEventListener('click', () => {
+        if (_cmpRoster.find(r => r.puuid === d.dataset.puuid)) return;
+        if (_cmpRoster.length >= 5) { alert('Max 5 players in compare.'); return; }
+        _cmpRoster.push({ puuid: d.dataset.puuid, summoner_name: d.dataset.name });
+        suggest.innerHTML = '';
+        search.value = '';
+        renderChips();
+        runCompare();
+      }));
+    }, 200);
+  });
+  document.getElementById('cmp-role').addEventListener('change', runCompare);
+
+  async function runCompare() {
+    const div = document.getElementById('cmp-result');
+    if (_cmpRoster.length < 1) { div.innerHTML = ''; return; }
     const role = document.getElementById('cmp-role').value;
-    if (!raw) return;
-    const puuids = raw.split(',').map(s => s.trim()).filter(Boolean);
     const params = new URLSearchParams();
-    puuids.forEach(p => params.append('puuid', p));
+    _cmpRoster.forEach(r => params.append('puuid', r.puuid));
     if (role) params.set('role', role);
     const data = await API('/compare?' + params);
+    if (!data.length) { div.innerHTML = '<div class="card"><p class="muted">No comparable data — try removing the role filter.</p></div>'; return; }
+    renderCompare(data);
+  }
 
+  function renderCompare(data) {
     const div = document.getElementById('cmp-result');
-    if (!data.length) { div.innerHTML = '<p class="muted">No data.</p>'; return; }
+    // Metrics where higher = better
+    const HIGHER_IS_BETTER = new Set([
+      'css_score','pepite_score','percentile_rank','winrate','games_played',
+      'gd15','xpd15','csd15','cspm','dmg_share','dpm','kp','kda','vspm','wpm','solo_kills','champion_pool_size','lp'
+    ]);
+    function bestIdx(values) {
+      // Return index of the max (or null if all undefined)
+      let best = null, bv = -Infinity;
+      values.forEach((v, i) => {
+        if (v == null || isNaN(v)) return;
+        if (v > bv) { bv = v; best = i; }
+      });
+      return best;
+    }
+    function worstIdx(values) {
+      let worst = null, wv = Infinity;
+      values.forEach((v, i) => {
+        if (v == null || isNaN(v)) return;
+        if (v < wv) { wv = v; worst = i; }
+      });
+      return worst;
+    }
+    function metricRow(label, key, fmt = (v) => v) {
+      const values = data.map(d => key in d.stats ? d.stats[key] : d[key]);
+      const best = HIGHER_IS_BETTER.has(key) ? bestIdx(values) : null;
+      const worst = HIGHER_IS_BETTER.has(key) ? worstIdx(values) : null;
+      return `
+        <tr>
+          <td><strong>${label}</strong></td>
+          ${values.map((v, i) => {
+            const cls = v == null ? 'muted' : (i === best ? 'delta-pos' : i === worst && data.length > 1 ? 'delta-neg' : '');
+            return `<td class="${cls}">${v == null ? '—' : fmt(v)}</td>`;
+          }).join('')}
+        </tr>`;
+    }
+    function metaHeader(d) {
+      return `
+        <th style="vertical-align:top;min-width:160px;">
+          <div style="font-size:13px;font-weight:700;text-transform:none;letter-spacing:0;color:var(--text);">${d.summoner_name}</div>
+          <div class="muted" style="font-size:11px;font-weight:500;text-transform:none;letter-spacing:0;margin-top:3px;">
+            ${d.tier ? '<span class="tier-badge tier-'+d.tier+'">'+d.tier+'</span>' : ''}
+            ${d.lp != null ? d.lp + ' LP' : ''}
+            ${d.age ? '· '+d.age+'y' : ''}
+            ${d.current_team_tag ? '· '+d.current_team_tag : ''}
+            ${d.is_rising_star ? '· 🚀' : ''}
+          </div>
+        </th>`;
+    }
 
     div.innerHTML = `
-      <div class="card"><canvas id="cmp-radar" height="300"></canvas></div>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Radar — relative to peer max</h3>
+          <canvas id="cmp-radar" height="280"></canvas>
+        </div>
+        <div class="card">
+          <h3>Headline scores</h3>
+          <div class="table-wrap">
+            <table class="compare-table">
+              <thead><tr><th>Metric</th>${data.map(metaHeader).join('')}</tr></thead>
+              <tbody>
+                ${metricRow('Pépite', 'pepite_score', v => v.toFixed(1))}
+                ${metricRow('CSS', 'css_score', v => v.toFixed(1))}
+                ${metricRow('Percentile', 'percentile_rank', v => 'P' + v)}
+                ${metricRow('Games', 'games_played')}
+                ${metricRow('Winrate', 'winrate', v => v + '%')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
       <div class="card">
-        <h3>Side-by-side stats</h3>
-        <table>
-          <thead><tr><th>Metric</th>${data.map(d => `<th>${d.summoner_name}</th>`).join('')}</tr></thead>
-          <tbody>
-            ${['css_score','games_played','percentile_rank'].map(k => `<tr><td>${k}</td>${data.map(d => `<td>${d[k]}</td>`).join('')}</tr>`).join('')}
-            ${['gd15','xpd15','csd15','cspm','dmg_share','dpm','kp','kda','vspm','wpm','solo_kills','champion_pool_size'].map(k => `<tr><td>${k}</td>${data.map(d => `<td>${d.stats[k]}</td>`).join('')}</tr>`).join('')}
-          </tbody>
-        </table>
+        <h3>Detailed stats <span class="muted" style="font-size:11px;font-weight:400;">green = best of group · red = worst</span></h3>
+        <div class="table-wrap">
+          <table class="compare-table">
+            <thead><tr><th>Metric</th>${data.map(metaHeader).join('')}</tr></thead>
+            <tbody>
+              ${metricRow('GD@15',     'gd15')}
+              ${metricRow('XPD@15',    'xpd15')}
+              ${metricRow('CSD@15',    'csd15')}
+              ${metricRow('CS / min',  'cspm', v => v.toFixed(2))}
+              ${metricRow('Dmg share', 'dmg_share', v => (v*100).toFixed(1) + '%')}
+              ${metricRow('DPM',       'dpm')}
+              ${metricRow('KP',        'kp', v => (v*100).toFixed(0) + '%')}
+              ${metricRow('KDA',       'kda', v => v.toFixed(2))}
+              ${metricRow('VS / min',  'vspm', v => v.toFixed(2))}
+              ${metricRow('Wards / min', 'wpm', v => v.toFixed(2))}
+              ${metricRow('Solo kills', 'solo_kills', v => v.toFixed(2))}
+              ${metricRow('Champ pool', 'champion_pool_size')}
+            </tbody>
+          </table>
+        </div>
       </div>
     `;
 
+    // Radar (8 axes — clamped to player-set max so the shape reflects relative strength)
     const metrics = ['gd15','xpd15','dmg_share','kp','kda','vspm','solo_kills','cspm'];
-    const colors = ['#f59e0b','#34d399','#a78bfa','#f87171','#60a5fa'];
-    const max = metrics.map(m => Math.max(...data.map(d => Math.abs(d.stats[m]||0)),1));
-    new Chart(document.getElementById('cmp-radar'), {
+    const palette = ['#5b8def','#22d3a4','#f5a524','#a78bfa','#ef4444'];
+    const max = metrics.map(m => Math.max(...data.map(d => Math.abs(d.stats[m]||0)), 1));
+    if (_cmpRadar) _cmpRadar.destroy();
+    _cmpRadar = new Chart(document.getElementById('cmp-radar'), {
       type: 'radar',
       data: {
         labels: metrics,
         datasets: data.map((d,i) => ({
           label: d.summoner_name,
           data: metrics.map((m,j) => 50 + ((d.stats[m]||0)/max[j])*40),
-          backgroundColor: colors[i] + '33',
-          borderColor: colors[i],
+          backgroundColor: palette[i] + '22',
+          borderColor: palette[i],
+          pointBackgroundColor: palette[i],
+          borderWidth: 2,
         }))
       },
       options: {
-        scales: { r: { min: 0, max: 100, grid:{color:'#2a2e37'}, angleLines:{color:'#2a2e37'}, pointLabels:{color:'#ebeced'}, ticks:{display:false} } },
-        plugins: { legend: { labels: { color: '#ebeced' } } },
+        scales: {
+          r: {
+            min: 0, max: 100,
+            grid: { color: 'rgba(255,255,255,0.06)' },
+            angleLines: { color: 'rgba(255,255,255,0.08)' },
+            pointLabels: { color: '#b6bcc8', font: { size: 11 } },
+            ticks: { display: false },
+          }
+        },
+        plugins: { legend: { labels: { color: '#e7eaf0' } } },
       }
     });
-  });
+  }
+
+  renderChips();
 }
 
 /* ---------------- ADMIN ---------------- */
@@ -1537,6 +1692,72 @@ document.getElementById('match-modal').addEventListener('click', (e) => {
 });
 
 /* ---------------- TOURNAMENT TAB ---------------- */
+/* ---------- vs CHAMPION matchup card ---------- */
+let _matchupSort = "games";
+
+async function loadMatchups(puuid, role) {
+  const card = document.getElementById('matchup-card');
+  if (!card) return;
+  const data = await API(`/players/${puuid}/matchups?role=${role}&min_games=2`);
+  const list = data.matchups || [];
+  if (!list.length) {
+    card.innerHTML = `
+      <h3>vs Champion <span class="muted" style="font-size:11px;font-weight:400;">opponent same role</span></h3>
+      <p class="muted" style="margin:0;font-size:12px;">No matchups with ≥2 games against any champion. Ingest more matches.</p>`;
+    return;
+  }
+  function rowHTML(m) {
+    return `
+      <tr>
+        <td><strong>${m.champion}</strong></td>
+        <td>${m.games}</td>
+        <td>${m.winrate}%</td>
+        <td class="${m.avg_gd15>=0?'delta-pos':'delta-neg'}">${m.avg_gd15}</td>
+        <td class="${m.avg_csd15>=0?'delta-pos':'delta-neg'}">${m.avg_csd15}</td>
+        <td>${m.avg_kda}</td>
+        <td>${(m.avg_dmg_share*100).toFixed(1)}%</td>
+      </tr>`;
+  }
+  function sortedList() {
+    const k = _matchupSort;
+    const cmp = {
+      games:    (a,b) => b.games - a.games,
+      winrate:  (a,b) => b.winrate - a.winrate,
+      gd15:     (a,b) => b.avg_gd15 - a.avg_gd15,
+      kda:      (a,b) => b.avg_kda - a.avg_kda,
+    }[k] || ((a,b) => b.games - a.games);
+    return [...list].sort(cmp);
+  }
+  function render() {
+    const sorted = sortedList();
+    card.innerHTML = `
+      <h3>vs Champion <span class="muted" style="font-size:11px;font-weight:400;">opponent same role · ${data.total_games} total games</span></h3>
+      <div class="row" style="margin-bottom:8px;">
+        <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;font-weight:600;">Sort
+          <select id="matchup-sort" style="padding:4px 8px;font-size:12px;">
+            <option value="games" ${_matchupSort==='games'?'selected':''}>Games</option>
+            <option value="winrate" ${_matchupSort==='winrate'?'selected':''}>Winrate</option>
+            <option value="gd15" ${_matchupSort==='gd15'?'selected':''}>GD@15</option>
+            <option value="kda" ${_matchupSort==='kda'?'selected':''}>KDA</option>
+          </select>
+        </label>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Champion</th><th>Games</th><th>WR</th><th>GD@15</th><th>CSD@15</th><th>KDA</th><th>Dmg %</th>
+          </tr></thead>
+          <tbody>${sorted.map(rowHTML).join('')}</tbody>
+        </table>
+      </div>`;
+    document.getElementById('matchup-sort').addEventListener('change', e => {
+      _matchupSort = e.target.value;
+      render();
+    });
+  }
+  render();
+}
+
 async function loadTournamentTab(puuid) {
   const root = document.getElementById('tab-tournament');
   const data = await API('/players/' + puuid + '/tournaments');

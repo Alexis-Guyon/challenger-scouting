@@ -178,25 +178,56 @@ async def _ingest_one_game(client: LolesportsClient, db: Session,
             if 15 * 60 <= estimated <= 80 * 60:
                 duration_sec = estimated
 
-    # Fetch a window centered on the 15:00 game-time mark for laning diffs.
+    # Fetch windows centered on the 10:00 + 15:00 game-time marks for laning
+    # diffs. The window endpoint returns ~10 frames at 10s spacing; we walk
+    # the frames and pick the one whose timestamp is closest to the target
+    # broadcast time (rather than blindly taking frames[-1] which is up to
+    # ~100 s past the requested mark).
+
+    def _capture_snap(window_doc, target_dt) -> dict[int, dict]:
+        """Build a {participantId -> {totalGold, creepScore, level, xp}} map
+        from the frame closest to target_dt."""
+        out: dict[int, dict] = {}
+        if not window_doc or not window_doc.get("frames"):
+            return out
+        best = None
+        best_dt = float("inf")
+        for f in window_doc["frames"]:
+            ts = _parse_iso(f.get("rfc460Timestamp") or "")
+            if not ts:
+                continue
+            delta = abs((ts - target_dt).total_seconds())
+            if delta < best_dt:
+                best_dt = delta
+                best = f
+        if not best:
+            best = window_doc["frames"][-1]
+        for side_key in ("blueTeam", "redTeam"):
+            for p in (best.get(side_key) or {}).get("participants", []) or []:
+                pid = p.get("participantId")
+                if pid is not None:
+                    out[pid] = {
+                        "totalGold": p.get("totalGold", 0),
+                        "creepScore": p.get("creepScore", 0),
+                        "level": p.get("level", 0),
+                        "xp": p.get("xp", 0),
+                    }
+        return out
+
+    snap_10: dict[int, dict] = {}
     snap_15: dict[int, dict] = {}
     if bc_start:
-        target_15 = bc_start + timedelta(minutes=18)  # +18 = ~3 min draft/loading + 15 in-game
-        target_iso = round_to_10s_iso(target_15)
+        # +13 = ~3 min draft/loading + 10 in-game
+        target_10 = bc_start + timedelta(minutes=13)
+        target_15 = bc_start + timedelta(minutes=18)
         try:
-            w15 = await client.get_window(game_id, target_iso)
-            if w15 and w15.get("frames"):
-                # Pick the frame closest to the end of that window (≈15:00 in-game)
-                f = w15["frames"][-1]
-                for side_key in ("blueTeam", "redTeam"):
-                    for p in (f.get(side_key) or {}).get("participants", []) or []:
-                        pid = p.get("participantId")
-                        if pid is not None:
-                            snap_15[pid] = {
-                                "totalGold": p.get("totalGold", 0),
-                                "creepScore": p.get("creepScore", 0),
-                                "level": p.get("level", 0),
-                            }
+            w10 = await client.get_window(game_id, round_to_10s_iso(target_10))
+            snap_10 = _capture_snap(w10, target_10)
+        except Exception:
+            pass
+        try:
+            w15 = await client.get_window(game_id, round_to_10s_iso(target_15))
+            snap_15 = _capture_snap(w15, target_15)
         except Exception:
             pass
 
@@ -312,11 +343,16 @@ async def _ingest_one_game(client: LolesportsClient, db: Session,
                 None
             )
             opp_pid = opp.get("participantId") if opp else None
+            mine_10 = snap_10.get(pid, {})
+            opp_10 = snap_10.get(opp_pid, {}) if opp_pid is not None else {}
             mine_15 = snap_15.get(pid, {})
             opp_15 = snap_15.get(opp_pid, {}) if opp_pid is not None else {}
+            gd10 = mine_10.get("totalGold", 0) - opp_10.get("totalGold", 0) if opp_10 else 0
+            csd10 = mine_10.get("creepScore", 0) - opp_10.get("creepScore", 0) if opp_10 else 0
+            xpd10 = mine_10.get("xp", 0) - opp_10.get("xp", 0) if opp_10 else 0
             gd15 = mine_15.get("totalGold", 0) - opp_15.get("totalGold", 0) if opp_15 else 0
             csd15 = mine_15.get("creepScore", 0) - opp_15.get("creepScore", 0) if opp_15 else 0
-            xpd15 = 0  # XP not directly exposed; left as 0 (window doesn't ship XP)
+            xpd15 = mine_15.get("xp", 0) - opp_15.get("xp", 0) if opp_15 else 0
 
             tk = team_kills_blue if side_label == "blue" else team_kills_red
             kp = (kills + assists) / tk if tk else 0
@@ -335,6 +371,9 @@ async def _ingest_one_game(client: LolesportsClient, db: Session,
                 win=win,
                 kills=kills, deaths=deaths, assists=assists,
                 cs=cs, gold=gold, level=level,
+                gd_at_10=gd10, csd_at_10=csd10, xpd_at_10=xpd10,
+                gold_at_10=mine_10.get("totalGold", 0),
+                cs_at_10=mine_10.get("creepScore", 0),
                 gd_at_15=gd15, csd_at_15=csd15, xpd_at_15=xpd15,
                 gold_at_15=mine_15.get("totalGold", 0),
                 cs_at_15=mine_15.get("creepScore", 0),

@@ -326,6 +326,75 @@ def get_player(
     }
 
 
+@router.get("/{puuid}/matchups")
+def player_matchups(
+    puuid: str,
+    role: str | None = Query(default=None, description="Filter to one role (TOP/JGL/MID/ADC/SUP)"),
+    min_games: int = Query(default=2, ge=1, le=50),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """For each opponent champion the player has faced (same role, opposite
+    team), aggregate winrate / GD@15 / KDA / dmg_share. Powers the
+    "vs champion" matchup table on the player profile.
+
+    The query is two-step rather than a self-join: we collect the player's
+    own MatchParticipant rows, then for each match_id we find the opposite-
+    team same-role participant.
+    """
+    p = db.get(Player, puuid)
+    if not p:
+        raise HTTPException(status_code=404, detail="player not found")
+
+    mine_q = db.query(MatchParticipant).filter_by(puuid=puuid)
+    if role:
+        mine_q = mine_q.filter(MatchParticipant.role == role.upper())
+    mine_rows = mine_q.all()
+    if not mine_rows:
+        return {"matchups": [], "total_games": 0}
+
+    # Pull every opposing-team same-role participant in a single SQL.
+    match_ids = [r.match_id for r in mine_rows]
+    mine_by_match = {r.match_id: r for r in mine_rows}
+    opp_rows = (
+        db.query(MatchParticipant)
+        .filter(MatchParticipant.match_id.in_(match_ids))
+        .filter(MatchParticipant.puuid != puuid)
+        .all()
+    )
+    # Bucket by champion: only count the opp that shares the player's role
+    from collections import defaultdict
+    buckets: dict[str, list] = defaultdict(list)
+    for opp in opp_rows:
+        mine = mine_by_match.get(opp.match_id)
+        if not mine or opp.role != mine.role or opp.team_id == mine.team_id:
+            continue
+        buckets[opp.champion_name or "Unknown"].append((mine, opp))
+
+    matchups = []
+    for champ, pairs in buckets.items():
+        if len(pairs) < min_games:
+            continue
+        n = len(pairs)
+        wins = sum(1 for m, _ in pairs if m.win)
+        gd15 = sum(m.gd_at_15 for m, _ in pairs) / n
+        csd15 = sum(m.csd_at_15 for m, _ in pairs) / n
+        kda = sum(m.kda for m, _ in pairs) / n
+        dmg_share = sum(m.damage_share for m, _ in pairs) / n
+        matchups.append({
+            "champion": champ,
+            "games": n,
+            "wins": wins,
+            "winrate": round(wins / n * 100, 1),
+            "avg_gd15": round(gd15, 1),
+            "avg_csd15": round(csd15, 1),
+            "avg_kda": round(kda, 2),
+            "avg_dmg_share": round(dmg_share, 3),
+        })
+    matchups.sort(key=lambda x: -x["games"])
+    return {"matchups": matchups, "total_games": len(mine_rows)}
+
+
 @router.get("")
 def list_players(
     role: str | None = None,

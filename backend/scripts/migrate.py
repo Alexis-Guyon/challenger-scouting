@@ -46,6 +46,12 @@ NEW_COLUMNS = [
     # Pépite composite score (0..100) + breakdown JSON for UI tooltips
     ("player_aggregates", "pepite_score", "FLOAT DEFAULT 0"),
     ("player_aggregates", "pepite_breakdown_json", "TEXT"),
+    # Tournament @10-min splits (added alongside existing @15)
+    ("official_match_participants", "gd_at_10", "INTEGER DEFAULT 0"),
+    ("official_match_participants", "xpd_at_10", "INTEGER DEFAULT 0"),
+    ("official_match_participants", "csd_at_10", "INTEGER DEFAULT 0"),
+    ("official_match_participants", "gold_at_10", "INTEGER DEFAULT 0"),
+    ("official_match_participants", "cs_at_10", "INTEGER DEFAULT 0"),
 ]
 
 

@@ -240,6 +240,13 @@ class OfficialMatchParticipant(Base):
     gold = Column(Integer, default=0)
     level = Column(Integer, default=0)
     # 10-second-frame derivatives (computed from feed.lolesports.com window)
+    # @10 minute split — extra evaluation point for early-game performance
+    gd_at_10 = Column(Integer, default=0)
+    xpd_at_10 = Column(Integer, default=0)
+    csd_at_10 = Column(Integer, default=0)
+    gold_at_10 = Column(Integer, default=0)
+    cs_at_10 = Column(Integer, default=0)
+    # @15 minute split — laning conclusion benchmark
     gd_at_15 = Column(Integer, default=0)
     xpd_at_15 = Column(Integer, default=0)
     csd_at_15 = Column(Integer, default=0)

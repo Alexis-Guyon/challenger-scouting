@@ -844,19 +844,21 @@ tr.lb-row:hover .tier-icon { transform: scale(1.08); }
   backdrop-filter: blur(8px);
   display: none;
   flex-direction: column;
+  /* In flex-direction: column the cross-axis is horizontal, so
+     `align-items: center` centers horizontally. The main axis is
+     vertical, so vertical centering requires `justify-content`. We
+     use `safe center` so a tall modal doesn't get clipped above the
+     viewport — falls back to flex-start when content overflows. */
+  justify-content: safe center;
   align-items: center;
   padding: 24px 16px;
   overflow-y: auto;
   animation: fadeIn 0.18s var(--ease);
 }
 .match-modal.open { display: flex; }
-.match-modal-card {
-  /* `margin: auto 0` on a flex item makes the modal center vertically
-     when content is short, then naturally yield to scroll when tall.
-     This is the standard centered-modal flex pattern — works in every
-     browser, no `:has()` needed. */
-  margin: auto 0;
-}
+/* Belt-and-suspenders: `margin: auto 0` on the card also helps
+   vertical centering on browsers without `safe center` support. */
+.match-modal-card { margin: auto 0; }
 body:has(.match-modal.open) { overflow: hidden; }
 .match-modal-card {
   background: var(--card);

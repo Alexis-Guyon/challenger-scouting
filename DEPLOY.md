@@ -44,35 +44,7 @@ After first deploy, SSH in and create the admin user:
 railway run python scripts/seed_admin.py admin <strong-password> admin g2
 ```
 
-## Option B — Fly.io
-
-Why: Paris region (low latency vs EUW), 3 free VMs on hobby plan, global
-deploy with persistent volumes.
-
-```bash
-# Install Fly CLI
-# macOS: brew install flyctl
-# Windows: iwr https://fly.io/install.ps1 -useb | iex
-
-fly auth login
-fly launch --no-deploy            # detects fly.toml
-fly volumes create scouting_data --size 1 --region cdg
-fly secrets set \
-  RIOT_API_KEY=RGAPI-xxxx \
-  JWT_SECRET="$(openssl rand -hex 32)" \
-  FANDOM_USERNAME=YourFandomName@bot-label \
-  FANDOM_PASSWORD=xxxx
-
-# Either keep SQLite on the volume, or attach Fly Postgres:
-fly postgres create --name scouting-db --region cdg
-fly postgres attach --app challenger-scouting scouting-db
-# (this auto-sets DATABASE_URL secret)
-
-fly deploy
-fly ssh console -C "python scripts/seed_admin.py admin <strong-password> admin g2"
-```
-
-## Option C — Render
+## Option B — Render
 
 Why: free tier (with sleep after 15 min of inactivity, fine for an internal
 tool), git push deploy, Postgres built-in.
@@ -85,7 +57,7 @@ tool), git push deploy, Postgres built-in.
 4. Fill in `RIOT_API_KEY`, `FANDOM_USERNAME`, `FANDOM_PASSWORD` in the prompt
 5. After deploy, open Shell tab → `python scripts/seed_admin.py admin <pwd> admin g2`
 
-## Option D — Self-hosted VPS (Hetzner / Scaleway / Digital Ocean)
+## Option C — Self-hosted VPS (Hetzner / Scaleway / Digital Ocean)
 
 Why: cheapest for long-term scaling. ~3-5€/mo, full control, no sleep.
 
@@ -105,18 +77,18 @@ docker compose exec app python scripts/seed_admin.py admin <pwd> admin g2
 # (one-line install: sudo apt install caddy, then add a Caddyfile)
 ```
 
-## Option E — Hybrid: Vercel (frontend) + Fly/Railway (backend)
+## Option D — Hybrid: Vercel (frontend) + Railway/Render (backend)
 
 Vercel can host the frontend as a static site — but **NOT the backend**
 (serverless functions cap at 60 s, our ingestion jobs run 5-15 min and the
 in-memory `_jobs` tracker requires a persistent process).
 
-So the recipe is: deploy the backend to Fly/Railway/Render (options A-C
+So the recipe is: deploy the backend to Railway/Render (options A or B
 above) and put **only the frontend** on Vercel pointing at it.
 
 ### 1. Deploy the backend somewhere persistent
-Pick option A, B, C or D and complete those steps. Note the public URL of
-your backend, e.g. `https://challenger-scouting.fly.dev`.
+Pick option A, B or C and complete those steps. Note the public URL of
+your backend, e.g. `https://challenger-scouting.up.railway.app`.
 
 ### 2. Tell the frontend where the backend lives
 Edit `frontend/index.html` — there's a small inline script in `<head>`:
@@ -185,7 +157,7 @@ pattern automatically.
 
 ## Backups
 
-For SQLite: snapshot `backend/data/scouting.db` periodically (Fly volume
+For SQLite: snapshot `backend/data/scouting.db` periodically (Railway volume
 snapshot, or rsync to S3).
 For Postgres: managed services handle this; otherwise schedule a
 `pg_dump | gzip > s3://...` cron.

@@ -35,7 +35,7 @@ The Challenger Scouting Score now applies two additional adjustments beyond samp
 
 ## Deployment
 
-For production deployment (Railway, Fly.io, Render, self-hosted VPS, Docker), see [DEPLOY.md](DEPLOY.md).
+For production deployment (Railway, Render, self-hosted VPS, Docker), see [DEPLOY.md](DEPLOY.md).
 
 ## Local setup
 

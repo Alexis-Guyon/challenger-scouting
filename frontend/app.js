@@ -508,6 +508,48 @@ function initLeaderboard() {
     _lbOffset = 0;  // reset to first page when filters change
     loadLeaderboard();
   });
+
+  // Quick-filter pills — one-click presets that map to existing filter
+  // controls so the user doesn't have to hunt through 8 dropdowns.
+  document.querySelectorAll('.quick-pill').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const k = btn.dataset.quick;
+      const prostatus = document.getElementById('f-prostatus');
+      const sortSel = document.getElementById('f-sort');
+      const maxAge = document.getElementById('f-maxage');
+      const contract = document.getElementById('f-contract');
+      const region = document.getElementById('f-region');
+      const tier = document.getElementById('f-tier');
+      const minGames = document.getElementById('f-min');
+
+      if (k === 'reset') {
+        prostatus.value = '';
+        maxAge.value = '';
+        contract.value = '';
+        document.getElementById('f-residency').value = '';
+        // Keep region default (EUW) since the user explicitly defaults to it
+      } else if (k === 'fa') {
+        prostatus.value = 'fa';
+      } else if (k === 'rising') {
+        // No backend rising_only flag wired into f-* yet — fall back to
+        // sort by CSS desc on min 10 games to surface the strong recent
+        // climbers. (When we wire `rising_only`, swap to setting it.)
+        sortSel.value = 'css';
+        if (parseInt(minGames.value) < 10) minGames.value = 10;
+      } else if (k === 'u21') {
+        maxAge.value = '21';
+      } else if (k === 'contract90') {
+        prostatus.value = 'pro';  // contract filter only makes sense for pros
+        contract.value = '90';
+      }
+
+      // Visual active state — toggle highlighted class
+      document.querySelectorAll('.quick-pill').forEach(b => b.classList.toggle('active', b === btn && k !== 'reset'));
+      _lbOffset = 0;
+      loadLeaderboard();
+    });
+  });
+
   loadLeaderboard();
 }
 
@@ -934,7 +976,10 @@ async function loadPlayer(puuid) {
         <div style="font-size:32px;font-weight:800;">${agg.css_score}</div>
         <span class="score-pill ${scoreClass(agg.css_score)}">${scoreLabel(agg.css_score)}</span>
         <div class="muted" style="margin-top:4px;">P${agg.percentile_rank} · ${agg.role} · ${agg.games_played} games · ${agg.winrate}% WR</div>
-        <button id="export-pdf" class="export-btn" style="margin-top:8px;font-size:11px;padding:6px 12px;" title="Export this profile as PDF (browser print → Save as PDF)">📄 Export PDF</button>
+        <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px;">
+          <button id="export-md" class="export-btn" style="font-size:11px;padding:6px 12px;" title="Download a clean Markdown dossier of this player — paste in Notion/Discord/Slack or share with staff.">📋 Markdown</button>
+          <button id="export-pdf" class="export-btn" style="font-size:11px;padding:6px 12px;" title="Print to PDF via the browser (Ctrl+P → Save as PDF)">🖨 PDF</button>
+        </div>
       </div>
     </div>
 
@@ -944,6 +989,13 @@ async function loadPlayer(puuid) {
       <button class="tab" data-tab="roster">vs LEC ${agg.role}</button>
     </div>
     <div id="tab-soloq" class="tab-pane">
+
+    <div class="card" id="css-history-card">
+      <h3>📈 CSS trend <span class="muted" style="font-size:11px;font-weight:400;">evolution across patches — line per role</span> <span id="css-history-delta" style="font-size:12px;font-weight:400;margin-left:8px;"></span></h3>
+      <div id="css-history-empty" class="muted" style="font-size:12px;display:none;"></div>
+      <canvas id="css-history-chart" height="180"></canvas>
+    </div>
+
     <div class="grid-2">
       <div class="card">
         <h3>CSS radar — ${agg.role} (patch ${agg.patch})</h3>
@@ -1013,11 +1065,6 @@ async function loadPlayer(puuid) {
     <div class="card" id="matchup-card">
       <h3>vs Champion <span class="muted" style="font-size:11px;font-weight:400;">opponent same role · sortable by games / WR / GD@15</span></h3>
       <p class="muted" style="margin-top:0;font-size:11px;">Loading matchups…</p>
-    </div>
-
-    <div class="card" id="css-history-card" style="display:none;">
-      <h3>CSS history <span class="muted" style="font-size:11px;font-weight:400;">evolution across patches</span></h3>
-      <canvas id="css-history-chart" height="200"></canvas>
     </div>
 
     <div class="grid-2">
@@ -1112,6 +1159,40 @@ async function loadPlayer(puuid) {
     setTimeout(() => window.print(), 250);
   });
 
+  // Export Markdown — fetch the dossier and trigger a download. Uses
+  // fetch() directly (instead of API()) because we want the raw blob,
+  // not a JSON-parsed body, and we need to forward the Authorization
+  // header that API() injects.
+  document.getElementById('export-md').addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget;
+    const originalLabel = btn.textContent;
+    btn.textContent = '⏳ Building…';
+    btn.disabled = true;
+    try {
+      const resp = await fetch(API_BASE + '/players/' + puuid + '/dossier', {
+        headers: { 'Authorization': 'Bearer ' + getToken() },
+      });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const blob = await resp.blob();
+      // Try to honor the server's filename from Content-Disposition,
+      // fallback to a sane default if not present.
+      let filename = `dossier-${(p.summoner_name || 'player').split('#')[0].replace(/\s+/g, '_')}.md`;
+      const cd = resp.headers.get('content-disposition') || '';
+      const m = cd.match(/filename="([^"]+)"/);
+      if (m) filename = m[1];
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert('Markdown export failed: ' + e.message);
+    } finally {
+      btn.textContent = originalLabel;
+      btn.disabled = false;
+    }
+  });
+
   // CSS history (best-effort — silent fail if no snapshots yet)
   loadCssHistory(puuid).catch(() => {});
 
@@ -1156,15 +1237,37 @@ let _cssHistoryChart = null;
 async function loadCssHistory(puuid) {
   const card = document.getElementById('css-history-card');
   if (!card) return;
-  const data = await API('/players/' + puuid + '/history');
+  const empty = document.getElementById('css-history-empty');
+  const canvas = document.getElementById('css-history-chart');
+  const deltaEl = document.getElementById('css-history-delta');
+  if (deltaEl) deltaEl.innerHTML = '';
+
+  let data;
+  try {
+    data = await API('/players/' + puuid + '/history');
+  } catch (e) {
+    if (empty) { empty.style.display = 'block'; empty.textContent = 'Failed to load history: ' + e.message; }
+    if (canvas) canvas.style.display = 'none';
+    return;
+  }
   const byRole = data.by_role || {};
   const roles = Object.keys(byRole);
+
+  // Empty / insufficient data state — show the card with a friendly hint
+  // instead of silently hiding it. This was making the "trend" feature
+  // invisible to users who had only one patch on record.
   if (!roles.length || data.patches_count < 2) {
-    // Not enough data yet — keep the card hidden
+    if (canvas) canvas.style.display = 'none';
+    if (empty) {
+      empty.style.display = 'block';
+      const n = data.patches_count || 0;
+      empty.textContent = `Need 2+ patches of data to draw a trend — currently ${n} patch(es) on record. Snapshots are appended on every ladder ingest.`;
+    }
     return;
   }
 
-  card.style.display = 'block';
+  if (canvas) canvas.style.display = 'block';
+  if (empty) empty.style.display = 'none';
   // Build the union of all patches across roles for the X axis
   const patchOrder = [];
   const seen = new Set();
@@ -1218,6 +1321,33 @@ async function loadCssHistory(puuid) {
       },
     },
   });
+
+  // Headline delta — biggest CSS swing across the player's roles. A
+  // prospect that jumped 50→70 in 3 patches gets a green badge here.
+  if (deltaEl) {
+    let bestDelta = 0;
+    let bestRole = null;
+    let bestPath = null;
+    roles.forEach(r => {
+      const series = byRole[r].filter(s => s.css != null);
+      if (series.length < 2) return;
+      const first = series[0].css;
+      const last = series[series.length - 1].css;
+      const d = last - first;
+      if (Math.abs(d) > Math.abs(bestDelta)) {
+        bestDelta = d;
+        bestRole = r;
+        bestPath = `${first.toFixed(0)} → ${last.toFixed(0)}`;
+      }
+    });
+    if (bestRole && Math.abs(bestDelta) >= 5) {
+      const arrow = bestDelta > 0 ? '↗' : '↘';
+      const cls = bestDelta > 0 ? 'delta-pos' : 'delta-neg';
+      deltaEl.innerHTML = `<span class="${cls}">${arrow} ${bestDelta > 0 ? '+' : ''}${bestDelta.toFixed(0)} CSS</span> on ${bestRole} (${bestPath})`;
+    } else if (bestRole) {
+      deltaEl.innerHTML = `<span class="muted">stable on ${bestRole} (${bestPath})</span>`;
+    }
+  }
 }
 
 async function loadNotes(puuid) {

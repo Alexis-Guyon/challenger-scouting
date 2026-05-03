@@ -1144,6 +1144,40 @@ body:has(.match-modal.open) { overflow: hidden; }
 }
 .export-btn:hover { box-shadow: 0 1px 0 rgba(255,255,255,0.22) inset, 0 4px 14px rgba(34,211,164,0.45); }
 
+/* Quick-filter pills above the leaderboard table */
+.quick-pill {
+  background: var(--card);
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.12s var(--ease);
+}
+.quick-pill:hover {
+  border-color: var(--accent);
+  background: rgba(110, 168, 255, 0.08);
+}
+.quick-pill.active {
+  background: linear-gradient(135deg, #6ea8ff 0%, #5b8ee0 100%);
+  border-color: transparent;
+  color: #051a35;
+  font-weight: 700;
+  box-shadow: 0 1px 0 rgba(255,255,255,0.18) inset, 0 2px 8px rgba(110,168,255,0.35);
+}
+
+/* CSS history empty state — visible card with a friendly hint */
+#css-history-card { margin-bottom: 14px; }
+#css-history-empty {
+  padding: 14px 16px;
+  background: rgba(138,143,153,0.06);
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  margin-top: 4px;
+}
+
 .no-data { font-style: italic; color: var(--muted-2); font-size: 11px; }
 
 /* ============================================================

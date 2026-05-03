@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import PlainTextResponse
 from sqlalchemy import desc, exists
 from sqlalchemy.orm import Session
 
@@ -8,11 +9,13 @@ from ..db import get_db
 from ..models import (
     ChampionPool,
     CSSSnapshot,
+    Match,
     MatchParticipant,
     Player,
     PlayerAggregate,
     PlayerMeta,
     RankSnapshot,
+    ScoutNote,
     User,
     WatchlistEntry,
 )
@@ -637,3 +640,259 @@ def list_players(
         "limit": limit,
         "items": out,
     }
+
+
+# ============================================================
+# /players/{puuid}/dossier — Markdown export for staff sharing
+# ============================================================
+
+@router.get("/{puuid}/dossier", response_class=PlainTextResponse)
+def player_dossier(
+    puuid: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Self-contained Markdown scouting report. Designed to be saved as a
+    .md file (or pasted into Notion/Discord/Slack) and shared with staff
+    who don't have access to the tool."""
+    p = db.get(Player, puuid)
+    if not p:
+        raise HTTPException(404, "player not found")
+
+    serialized = _serialize_player(p, db)
+    meta_payload = serialized.get("meta") or {}
+    latest_rank = (
+        db.query(RankSnapshot)
+        .filter_by(puuid=puuid)
+        .order_by(desc(RankSnapshot.snapshot_date))
+        .first()
+    )
+
+    # Pick the "primary" aggregate = most games on the latest patch
+    aggs = (
+        db.query(PlayerAggregate)
+        .filter_by(puuid=puuid)
+        .order_by(desc(PlayerAggregate.games_played))
+        .all()
+    )
+    primary_agg = aggs[0] if aggs else None
+
+    pool = (
+        db.query(ChampionPool)
+        .filter_by(puuid=puuid)
+        .order_by(desc(ChampionPool.games))
+        .limit(10)
+        .all()
+    )
+
+    # Recent matches with date (join Match for game_creation)
+    recent_q = (
+        db.query(MatchParticipant, Match)
+        .join(Match, Match.match_id == MatchParticipant.match_id)
+        .filter(MatchParticipant.puuid == puuid)
+        .order_by(desc(Match.game_creation))
+        .limit(10)
+        .all()
+    )
+
+    notes = (
+        db.query(ScoutNote)
+        .filter_by(user_id=user.id, puuid=puuid)
+        .order_by(desc(ScoutNote.created_at))
+        .limit(20)
+        .all()
+    )
+
+    # CSS snapshots for trend section
+    snaps = (
+        db.query(CSSSnapshot)
+        .filter_by(puuid=puuid)
+        .order_by(CSSSnapshot.snapshot_at.asc())
+        .all()
+    )
+
+    # ---- Build Markdown ----
+    from datetime import datetime, timezone
+    lines: list[str] = []
+
+    name = p.summoner_name or "(unknown)"
+    lines.append(f"# Scouting Dossier — {name}")
+    lines.append("")
+    lines.append(f"_Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} by {user.username}_")
+    lines.append("")
+
+    # --- Identity ---
+    lines.append("## Identity")
+    lines.append("")
+    lines.append(f"- **Riot ID:** `{name}`")
+    lines.append(f"- **Region:** {p.region or '?'}")
+    lines.append(f"- **Account level:** {p.account_level or '?'}")
+    if latest_rank:
+        rank_str = f"{latest_rank.tier or '?'} {latest_rank.rank or ''}".strip()
+        lines.append(f"- **Current rank:** {rank_str} · {latest_rank.lp or 0} LP "
+                     f"({latest_rank.wins or 0}W / {latest_rank.losses or 0}L)")
+    if meta_payload:
+        if meta_payload.get("current_team"):
+            lines.append(f"- **Team:** {meta_payload.get('current_team_tag') or ''} {meta_payload.get('current_team') or ''}")
+        elif meta_payload.get("is_fa"):
+            lines.append("- **Status:** Free Agent")
+        if meta_payload.get("age"):
+            lines.append(f"- **Age:** {meta_payload['age']}")
+        if meta_payload.get("country"):
+            lines.append(f"- **Country:** {meta_payload['country']}")
+        if meta_payload.get("residency"):
+            lines.append(f"- **Residency:** {meta_payload['residency']}")
+        if meta_payload.get("lp_role"):
+            lines.append(f"- **Pro role:** {meta_payload['lp_role']}")
+        if meta_payload.get("contract_end"):
+            lines.append(f"- **Contract ends:** {meta_payload['contract_end']}")
+        if meta_payload.get("lolpros_url"):
+            lines.append(f"- **Lolpros:** {meta_payload['lolpros_url']}")
+        if meta_payload.get("leaguepedia_url"):
+            lines.append(f"- **Leaguepedia:** {meta_payload['leaguepedia_url']}")
+    if serialized.get("smurf_flag"):
+        lines.append(f"- **⚠ Smurf flag:** YES (score {serialized.get('smurf_score', 0):.2f})")
+    lines.append("")
+
+    # --- Headline CSS ---
+    if primary_agg:
+        _, _, breakdown = compute_css_for_aggregate(db, primary_agg)
+        lines.append(f"## Headline — {primary_agg.role} · Patch {primary_agg.patch}")
+        lines.append("")
+        lines.append(f"**CSS {round(primary_agg.css_score, 1)} / 100** "
+                     f"(percentile P{primary_agg.percentile_rank}) · "
+                     f"{primary_agg.games_played} games · "
+                     f"{round((primary_agg.wins / primary_agg.games_played * 100) if primary_agg.games_played else 0, 1)}% WR")
+        if primary_agg.is_rising_star:
+            lines.append("")
+            lines.append("> 🌟 **Rising star** — flagged by trend analysis")
+        lines.append("")
+        cats = (breakdown or {}).get("categories") or {}
+        if cats:
+            lines.append("### Score breakdown (0-100, 50 = par with median)")
+            lines.append("")
+            lines.append("| Category | Score |")
+            lines.append("|---|---:|")
+            for cat, val in cats.items():
+                lines.append(f"| {cat} | {val:.0f} |")
+            lines.append("")
+        lines.append("### Key per-game stats")
+        lines.append("")
+        lines.append("| Stat | Value |")
+        lines.append("|---|---:|")
+        lines.append(f"| KDA | {primary_agg.avg_kda:.2f} |")
+        lines.append(f"| KP | {primary_agg.avg_kp*100:.1f}% |")
+        lines.append(f"| GD@15 | {primary_agg.avg_gd15:+.0f} |")
+        lines.append(f"| CSD@15 | {primary_agg.avg_csd15:+.1f} |")
+        lines.append(f"| XPD@15 | {primary_agg.avg_xpd15:+.0f} |")
+        lines.append(f"| CS/min | {primary_agg.avg_cspm:.2f} |")
+        lines.append(f"| Damage share | {primary_agg.avg_dmg_share*100:.1f}% |")
+        lines.append(f"| DPM | {primary_agg.avg_dpm:.0f} |")
+        lines.append(f"| Vision/min | {primary_agg.avg_vspm:.2f} |")
+        lines.append(f"| Solo kills/g | {primary_agg.avg_solo_kills:.2f} |")
+        lines.append(f"| Early deaths/g | {primary_agg.avg_early_deaths:.2f} |")
+        lines.append(f"| Champion pool | {primary_agg.champion_pool_size} |")
+        lines.append("")
+
+    # --- All roles played ---
+    if len(aggs) > 1:
+        lines.append("## All roles & patches")
+        lines.append("")
+        lines.append("| Patch | Role | Games | WR | CSS | Percentile |")
+        lines.append("|---|---|---:|---:|---:|---:|")
+        for a in sorted(aggs, key=lambda x: (x.patch, -x.games_played), reverse=True)[:15]:
+            wr = (a.wins / a.games_played * 100) if a.games_played else 0
+            lines.append(f"| {a.patch} | {a.role} | {a.games_played} | "
+                         f"{wr:.1f}% | {a.css_score:.1f} | P{a.percentile_rank} |")
+        lines.append("")
+
+    # --- CSS trend ---
+    if snaps and len({s.patch for s in snaps if s.patch}) >= 2:
+        lines.append("## CSS trend")
+        lines.append("")
+        # Dedupe to (role, patch) latest
+        bucket: dict[tuple, CSSSnapshot] = {}
+        for s in snaps:
+            if not (s.patch and s.role):
+                continue
+            key = (s.role, s.patch)
+            if key not in bucket or s.snapshot_at > bucket[key].snapshot_at:
+                bucket[key] = s
+        # Group by role
+        by_role: dict[str, list] = {}
+        for (role, patch), s in bucket.items():
+            by_role.setdefault(role, []).append((patch, s))
+        for role, items in by_role.items():
+            items.sort(key=lambda x: x[1].snapshot_at)
+            traj = " → ".join(f"{patch}:{round(s.css_score or 0, 0):.0f}" for patch, s in items)
+            delta = ""
+            if len(items) >= 2:
+                d = (items[-1][1].css_score or 0) - (items[0][1].css_score or 0)
+                if abs(d) >= 5:
+                    delta = f" **({d:+.0f})**"
+            lines.append(f"- **{role}**: {traj}{delta}")
+        lines.append("")
+
+    # --- Top champions ---
+    if pool:
+        lines.append("## Top champions")
+        lines.append("")
+        lines.append("| Champion | Role | Games | WR | KDA | GD@15 | Champ-CSS |")
+        lines.append("|---|---|---:|---:|---:|---:|---:|")
+        for cp in pool:
+            wr = (cp.wins / cp.games * 100) if cp.games else 0
+            css = f"{cp.champion_css:.1f}" if cp.has_champion_baseline else "—"
+            lines.append(f"| {cp.champion_name} | {cp.role or '?'} | {cp.games} | "
+                         f"{wr:.1f}% | {cp.avg_kda:.2f} | {cp.avg_gd15:+.0f} | {css} |")
+        lines.append("")
+
+    # --- Recent matches ---
+    if recent_q:
+        lines.append("## Recent matches (last 10)")
+        lines.append("")
+        lines.append("| Date | Champion | Role | W/L | K/D/A | KDA | GD@15 | Dmg% |")
+        lines.append("|---|---|---|---|---|---:|---:|---:|")
+        for mp, m in recent_q:
+            d = m.game_creation.strftime("%Y-%m-%d") if m.game_creation else "—"
+            wl = "**W**" if mp.win else "L"
+            lines.append(f"| {d} | {mp.champion_name or '?'} | {mp.role or '?'} | {wl} | "
+                         f"{mp.kills}/{mp.deaths}/{mp.assists} | {mp.kda:.2f} | "
+                         f"{mp.gd_at_15:+d} | {mp.damage_share*100:.1f}% |")
+        lines.append("")
+
+    # --- Notes ---
+    if notes:
+        lines.append("## Scout notes")
+        lines.append("")
+        for n in notes:
+            d = n.created_at.strftime("%Y-%m-%d %H:%M") if n.created_at else ""
+            lines.append(f"### {d}")
+            lines.append("")
+            for ln in (n.content or "").splitlines():
+                lines.append(f"> {ln}")
+            lines.append("")
+
+    # --- Smurf signals ---
+    sig = serialized.get("smurf_signals")
+    if isinstance(sig, dict) and sig.get("signals"):
+        lines.append("## Smurf signals")
+        lines.append("")
+        lines.append(f"Final score: **{serialized.get('smurf_score', 0):.2f}**")
+        lines.append("")
+        for s in sig["signals"][:10]:
+            label = s.get("label") or s.get("name") or "?"
+            score = s.get("score") or 0
+            lines.append(f"- {label} — **{score:.2f}**")
+        lines.append("")
+
+    lines.append("---")
+    lines.append(f"_Sourced from Riot match-v5 + lolesports + Lolpros + Leaguepedia. Data as of {datetime.now(timezone.utc).date().isoformat()}._")
+
+    md = "\n".join(lines) + "\n"
+    return PlainTextResponse(
+        content=md,
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="dossier-{(name.split("#")[0] or "player").replace(" ","_")}.md"',
+        },
+    )

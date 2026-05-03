@@ -1538,9 +1538,32 @@ function initAdmin() {
 
   document.getElementById('a-recompute').addEventListener('click', async () => {
     log.textContent = 'Recomputing aggregates and CSS...\n';
-    const r = await API('/admin/recompute', { method: 'POST' });
-    log.textContent += JSON.stringify(r, null, 2) + '\n';
-    refreshStats();
+    let r;
+    try {
+      r = await API('/admin/recompute', { method: 'POST' });
+    } catch (e) {
+      log.textContent += `failed to start: ${e.message}\n`;
+      return;
+    }
+    log.textContent += `Job ${r.job_id} started.\n`;
+    const poll = setInterval(async () => {
+      try {
+        const j = await API('/admin/jobs/' + r.job_id);
+        const extras = Object.entries(j)
+          .filter(([k]) => !['status','step','kind','params','created_at','updated_at','error'].includes(k))
+          .map(([k, v]) => `${k}=${v}`).join(' ');
+        log.textContent += `[${new Date().toLocaleTimeString()}] ${j.status} - ${j.step || ''} ${extras}\n`;
+        log.scrollTop = log.scrollHeight;
+        if (j.status === 'done' || j.status === 'error') {
+          clearInterval(poll);
+          if (j.error) log.textContent += `ERROR: ${j.error}\n`;
+          refreshStats();
+        }
+      } catch (e) {
+        log.textContent += `poll failed: ${e.message}\n`;
+        clearInterval(poll);
+      }
+    }, 5000);
   });
 
   document.getElementById('a-lolpros').addEventListener('click', async () => {

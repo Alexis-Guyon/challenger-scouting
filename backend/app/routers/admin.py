@@ -182,24 +182,67 @@ def jobs_history(limit: int = Query(default=30, ge=1, le=200)):
     return {"jobs": list_jobs(limit=limit)}
 
 
+# In-process lock so two simultaneous /admin/recompute clicks don't both
+# try to rebuild aggregates and deadlock SQLite. The first request wins
+# the lock and runs in the background; the second gets a 409 with the
+# already-running job_id.
+_recompute_lock = False
+_recompute_current_job: str | None = None
+
+
+def _run_recompute_job(job_id: str, min_games: int):
+    global _recompute_lock, _recompute_current_job
+    update_job(job_id, status="running", step="lobby_lp")
+    db = SessionLocal()
+    try:
+        n_lobby = compute_lobby_lp(db)
+        update_job(job_id, step="aggregate", extras_merge={"matches_lobby_lp_updated": n_lobby})
+        n_aggs = aggregate_all_players(db)
+        update_job(job_id, step="role_distributions", extras_merge={"aggregated_players": n_aggs})
+        compute_role_distributions(db, min_games=max(1, min_games))
+        update_job(job_id, step="champion_distributions")
+        compute_champion_distributions(db)
+        update_job(job_id, step="smurf_scoring")
+        n_smurf = score_all_smurfs(db)
+        update_job(job_id, step="scoring", extras_merge={"smurf_suspect": n_smurf})
+        n_scored = score_all(db, min_games=max(1, min_games))
+        update_job(job_id, step="champion_scoring", extras_merge={"scored_aggregates": n_scored})
+        n_champ = score_all_champions(db)
+        update_job(job_id, status="done", step="done", extras_merge={"champion_baselines": n_champ})
+    except Exception as exc:
+        logger.exception("recompute failed")
+        update_job(job_id, status="error", error=str(exc))
+    finally:
+        db.close()
+        _recompute_lock = False
+        _recompute_current_job = None
+
+
 @router.post("/recompute")
-def recompute(min_games: int = Query(default=None), db: Session = Depends(get_db)):
-    """Recompute aggregates, distributions, smurf scores, and CSS (role + champion)."""
+def recompute(
+    background: BackgroundTasks,
+    min_games: int = Query(default=None),
+):
+    """Recompute aggregates, distributions, smurf scores, and CSS.
+
+    Runs as a background job (was synchronous; took 5–10 min and timed out
+    HTTP clients, plus stacked recomputes deadlocked SQLite). Use the
+    returned job_id with /admin/jobs/<id> to poll.
+
+    Returns 409 if another recompute is already running.
+    """
+    global _recompute_lock, _recompute_current_job
+    if _recompute_lock:
+        from fastapi import HTTPException
+        raise HTTPException(409, f"recompute already running as {_recompute_current_job}")
+
     min_games = min_games if min_games is not None else settings.min_games
-    n_lobby = compute_lobby_lp(db)
-    n_aggs = aggregate_all_players(db)
-    compute_role_distributions(db, min_games=max(1, min_games))
-    compute_champion_distributions(db)  # uses Pass A (player-level) + Pass B (match-level fallback)
-    n_smurf = score_all_smurfs(db)              # must run BEFORE score_all (used in factor)
-    n_scored = score_all(db, min_games=max(1, min_games))
-    n_champ = score_all_champions(db)
-    return {
-        "matches_lobby_lp_updated": n_lobby,
-        "aggregated_players": n_aggs,
-        "scored_aggregates": n_scored,
-        "smurf_suspect": n_smurf,
-        "champion_baselines": n_champ,
-    }
+    job_id = next_job_id("rc")
+    create_job(job_id, "recompute", params={"min_games": min_games})
+    _recompute_lock = True
+    _recompute_current_job = job_id
+    background.add_task(_run_recompute_job, job_id, min_games)
+    return {"job_id": job_id, "status": "started"}
 
 
 @router.post("/smurf/retrain")

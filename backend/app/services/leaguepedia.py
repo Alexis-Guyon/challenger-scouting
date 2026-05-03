@@ -514,10 +514,16 @@ def _connect() -> mwclient.Site:
                 err,
             )
     else:
-        _AUTH_STATE["error"] = "no FANDOM_USERNAME/FANDOM_PASSWORD set"
-        logger.info(
-            "lol.fandom.com: anonymous "
-            "(set FANDOM_USERNAME/FANDOM_PASSWORD for higher rate-limits)"
+        _AUTH_STATE["error"] = (
+            "no FANDOM_USERNAME/FANDOM_PASSWORD set in .env — running anonymous "
+            "(50 titles/req, ~1 req/min, image fetch heavily rate-limited). "
+            "Set both env vars and restart uvicorn for full pro coverage."
+        )
+        logger.warning(
+            "lol.fandom.com: ANONYMOUS — set FANDOM_USERNAME / FANDOM_PASSWORD "
+            "in .env then restart uvicorn. Anonymous mode caps batches to 50 "
+            "and limits ~1 req/min, which drops ~40%% of the targeted pros and "
+            "all photo URLs."
         )
 
     return site

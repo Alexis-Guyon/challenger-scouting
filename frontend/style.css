@@ -843,13 +843,19 @@ tr.lb-row:hover .tier-icon { transform: scale(1.08); }
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
   display: none;
-  align-items: flex-start;
+  /* `safe center` keeps centering when content fits, falls back to
+     flex-start when it overflows (so tall modals don't get clipped
+     above the viewport). */
+  align-items: safe center;
   justify-content: center;
   padding: 40px 16px;
   overflow-y: auto;
   animation: fadeIn 0.18s var(--ease);
 }
 .match-modal.open { display: flex; }
+/* Lock the body's scroll while a modal is open so the page underneath
+   doesn't drift behind the backdrop. */
+body:has(.match-modal.open) { overflow: hidden; }
 .match-modal-card {
   background: var(--card);
   border: 1px solid var(--line);

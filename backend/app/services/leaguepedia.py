@@ -364,6 +364,84 @@ def _find_image_via_page_search(canonical_name: str) -> str | None:
     return None
 
 
+def fetch_all_active_pros_emea(
+    site: "mwclient.Site | None" = None,
+    limit: int = 5000,
+) -> list[dict]:
+    """Bulk-fetch every non-retired EMEA pro from Cargo Players table.
+
+    Used as the 3rd-pass enrichment source: pros NOT in Lolpros (Prime
+    League, NLC, LFL2, amateur ERL teams, sub-LEC, etc.) still have a
+    Leaguepedia entry. We bulk-fetch them all in 1 Cargo call (~5000
+    rows in ~5 s), then match against our Riot Players via two paths:
+    (a) parsed SoloqueueIds, (b) clean display-name match.
+
+    Concrete example: Reeker#KZN (BIG mid laner, Prime League) is on
+    Leaguepedia (Player=Reeker, born 2001-05-15) but not on Lolpros —
+    this pass picks him up.
+    """
+    import httpx
+    fields = (
+        "OverviewPage,Player,Name,NativeName,Birthdate,Country,"
+        "NationalityPrimary,Residency,Team,Role,IsRetired,SoloqueueIds,Image"
+    )
+    try:
+        r = httpx.get(
+            f"https://{LP_HOST}/wiki/Special:CargoExport",
+            params={
+                "tables": "Players", "fields": fields,
+                # Cargo stores both 'EMEA' (current) and 'Europe' (legacy)
+                "where": "IsRetired=0 AND (Residency=\"EMEA\" OR Residency=\"Europe\")",
+                "limit": str(limit), "format": "json",
+            },
+            timeout=45, headers={"User-Agent": USER_AGENT}, follow_redirects=True,
+        )
+    except Exception as exc:
+        logger.warning("Bulk EMEA Cargo fetch failed: %s", exc)
+        return []
+    if not r.text.startswith("["):
+        logger.warning("Bulk EMEA Cargo not JSON: %s", r.text[:200])
+        return []
+    try:
+        rows = r.json() or []
+    except Exception:
+        return []
+    logger.info("Bulk EMEA Cargo: %d active pros fetched", len(rows))
+    return rows
+
+
+def _parse_soloqueue_ids(raw: str) -> list[str]:
+    """Parse a Cargo SoloqueueIds string into a list of summoner-name candidates.
+
+    Format examples:
+      "'''EUW:''' Reeker#KZN"
+      "'''EUW:''' Nothing much <br> '''KR:''' EUBEST"
+      "EUW: Adam, Adam 16 Ans TerS"
+
+    We strip wiki-formatting + server tags, split on ;,, then yield each
+    candidate stripped to gameName (drop #tag for fuzzy matching).
+    """
+    if not raw:
+        return []
+    import re as _re
+    # Strip wiki markup: '''X:''' → ''
+    cleaned = _re.sub(r"'''[A-Za-z0-9]+:'''", "", str(raw))
+    # Strip <br> / <br/> tags
+    cleaned = _re.sub(r"<br\s*/?>", ",", cleaned)
+    # Strip remaining server prefixes like "EUW:" "KR:" at start of any seg
+    cleaned = _re.sub(r"\b[A-Z]{2,4}\s*:\s*", "", cleaned)
+    out: list[str] = []
+    for seg in cleaned.split(","):
+        seg = seg.strip()
+        if not seg:
+            continue
+        # Drop the #tag part for matching
+        base = seg.split("#")[0].strip()
+        if base:
+            out.append(base)
+    return out
+
+
 def fetch_pros_via_cargo(
     names: list[str],
     site: "mwclient.Site | None" = None,
@@ -1222,7 +1300,8 @@ def fetch_pros_by_name(names: Iterable[str], chunk_size: int = 1,
 def build_lookup(pros: list[dict]) -> dict[str, dict]:
     """
     Map normalized_name -> pro_record.
-    Indexes Player + every SoloqueueIds entry.
+    Indexes Player + every SoloqueueIds entry + parsed Cargo soloqueue
+    candidates (set by the EMEA bulk pass).
     """
     lookup: dict[str, dict] = {}
 
@@ -1230,20 +1309,26 @@ def build_lookup(pros: list[dict]) -> dict[str, dict]:
         candidates = set()
 
         if r.get("Player"):
-            candidates.add(r["Player"])
+            candidates.add(str(r["Player"]))
 
         sq = r.get("SoloqueueIds") or ""
 
         if sq:
-            for tok in re.split(r"[;,]", sq):
+            for tok in re.split(r"[;,]", str(sq)):
                 tok = tok.strip()
                 if tok:
                     candidates.add(tok)
 
+        # Parsed Cargo SoloqueueIds (set by 3rd-pass EMEA bulk fetch)
+        for cand in r.get("_soloqueue_candidates") or []:
+            candidates.add(cand)
+
+        # All _candidate_normalizations() variants of every candidate so
+        # "Reeker#KZN" → "reeker", "BIG Reeker" → "reeker", etc. all map.
         for c in candidates:
-            key = _normalize_name(c)
-            if key and key not in lookup:
-                lookup[key] = r
+            for key in _candidate_normalizations(str(c)):
+                if key and key not in lookup:
+                    lookup[key] = r
 
     return lookup
 
@@ -1465,6 +1550,36 @@ def run_leaguepedia_sync_sync(db: Session, prefer_wikitext: bool = True) -> dict
             used_path = "wikitext+cargo_export"
         except Exception as exc:
             logger.warning("Cargo backfill skipped (%s)", exc)
+
+        # 3rd pass: pick up pros NOT in Lolpros (Prime League / NLC / LFL2 /
+        # academy teams / sub-LEC). We bulk-fetch every active EMEA pro
+        # from Cargo (~5000 rows in one call) and add them to the lookup.
+        # Concrete recovery: Reeker#KZN (BIG mid laner, Prime League) is on
+        # Leaguepedia but missing from Lolpros — without this pass we never
+        # see his birthdate.
+        try:
+            emea_rows = fetch_all_active_pros_emea()
+            if emea_rows:
+                # Convert each Cargo row into our `pros` record shape and
+                # append. Dedupe by OverviewPage so we don't double-count
+                # pros already covered by the wikitext path.
+                seen_overview = {str(r.get("OverviewPage") or "").lower() for r in pros}
+                added = 0
+                for row in emea_rows:
+                    op = str(row.get("OverviewPage") or "").lower()
+                    if op in seen_overview:
+                        continue
+                    rec = _cargo_to_record(row)
+                    # Inject parsed SoloqueueIds so build_lookup indexes
+                    # them as match candidates (catches "Reeker#KZN" → Reeker)
+                    rec["_soloqueue_candidates"] = _parse_soloqueue_ids(row.get("SoloqueueIds"))
+                    pros.append(rec)
+                    seen_overview.add(op)
+                    added += 1
+                logger.info("3rd pass: +%d non-Lolpros EMEA pros from Cargo", added)
+                used_path = "wikitext+cargo_export+emea_bulk"
+        except Exception as exc:
+            logger.warning("3rd pass (EMEA bulk) skipped (%s)", exc)
     else:
         logger.info("Leaguepedia: no Lolpros-matched names — bulk Cargo fetch")
         try:

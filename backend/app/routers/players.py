@@ -130,10 +130,19 @@ def _serialize_player(p: Player, db: Session) -> dict:
 
 
 @router.get("/search")
-def search_players(name: str = Query(...), db: Session = Depends(get_db)):
+def search_players(
+    name: str | None = Query(default=None),
+    q: str | None = Query(default=None, description="alias for `name`"),
+    db: Session = Depends(get_db),
+):
+    """Search players by partial summoner_name match. Accepts either
+    `?name=` (legacy) or `?q=` (used by the Compare picker)."""
+    needle = (name or q or "").strip()
+    if not needle:
+        return []
     rows = (
         db.query(Player)
-        .filter(Player.summoner_name.ilike(f"%{name}%"))
+        .filter(Player.summoner_name.ilike(f"%{needle}%"))
         .limit(20)
         .all()
     )

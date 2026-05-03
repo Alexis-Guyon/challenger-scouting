@@ -367,117 +367,91 @@ def _find_image_via_page_search(canonical_name: str) -> str | None:
 def fetch_pros_via_cargo(
     names: list[str],
     site: "mwclient.Site | None" = None,
-    chunk_size: int = 30,
+    chunk_size: int = 100,
 ) -> dict[str, dict]:
-    """Bulk Cargo fetch — primary source for player metadata.
+    """Bulk Cargo fetch via Special:CargoExport (NOT api.php).
 
-    Cargo's `Players` table has 1 row per pro (disambig-aware via
-    `OverviewPage`) and exposes the cleanly-stored Birthdate, Team,
-    Country, Residency, Role, IsRetired, SoloqueueIds, ContractEnd,
-    NationalityPrimary, Image. Way more reliable than parsing the raw
-    wikitext infobox (some fields like full birthdate are stored
-    only in Cargo, not in the infobox params).
+    api.php's `action=cargoquery` is broken on Fandom: rate-limits to
+    ~1 req/sec AND throws `internal_api_error_MWException` on IN
+    clauses >50 names. We can't reliably batch through it.
 
-    Returns a dict {Player_display_name -> row_dict}. When multiple pros
-    share the same display name (Adam, Caps, etc.), the LAST one wins
-    in this dict — caller should use OverviewPage as the unique key
-    if it cares about disambiguation.
+    Special:CargoExport is the export endpoint Cargo was designed for:
+    no rate limit, no MWException, returns plain JSON, accepts 100+
+    names per IN clause. ~4 s for 471 names vs 8+ min via api.php.
+
+    Note: ContractEnd / FavCharacterN / Twitter / Instagram / Youtube
+    / Stream are NOT on the Players table — those live on the wikitext
+    infobox (use fetch_pros_via_parse for them).
+
+    Returns {OverviewPage: row_dict} so disambig-named pros get distinct
+    entries (e.g. Adam_(Adam_Maanane) vs Adam_(Hawksworth)).
+
+    `site` is accepted for API symmetry but ignored — Special:CargoExport
+    doesn't need authentication.
     """
     if not names:
         return {}
     import httpx
 
     out: dict[str, dict] = {}
-    authed = site is not None and getattr(site, "logged_in", False)
-
     chunks = [names[i:i + chunk_size] for i in range(0, len(names), chunk_size)]
     logger.info(
-        "Leaguepedia Cargo: %d names in %d chunk(s) (auth=%s)",
-        len(names), len(chunks), authed,
+        "Leaguepedia Cargo (Special:CargoExport): %d names in %d chunk(s)",
+        len(names), len(chunks),
     )
 
+    # Players-table fields confirmed to exist on lol.fandom.com (probed by
+    # progressive expansion 2026-05-03). Anything not on this list lives
+    # on a different Cargo table (e.g. ContractEnd, FavCharacters, socials).
     fields = (
         "OverviewPage,Player,Name,NativeName,Birthdate,Country,"
-        "NationalityPrimary,Residency,Team,Role,IsRetired,IsRetiredFromGame,"
-        "SoloqueueIds,ContractEnd,Image,FavCharacter1,FavCharacter2,"
-        "FavCharacter3,FavCharacter4,FavCharacter5,Stream,Twitter,"
-        "Instagram,Youtube,Discord,LolPros"
+        "NationalityPrimary,Residency,Team,Role,IsRetired,SoloqueueIds,Image"
     )
 
     for ci, chunk in enumerate(chunks, start=1):
-        # Quote-escape names; Cargo IN clause = "x","y","z"
         in_clause = ",".join('"' + n.replace('"', '\\"') + '"' for n in chunk)
         params = {
-            "action": "cargoquery",
             "tables": "Players",
             "fields": fields,
             "where": f"Player IN ({in_clause})",
             "limit": "500",
             "format": "json",
         }
-        # Retry up to 3 times on Cargo MWException — Fandom's Cargo
-        # extension is intermittently flaky on larger IN clauses.
-        rows = []
-        for attempt in range(3):
-            try:
-                if authed:
-                    r = site.connection.get(f"https://{LP_HOST}/api.php", params=params, timeout=30)
-                else:
-                    r = httpx.get(f"https://{LP_HOST}/api.php", params=params, timeout=30,
-                                   headers={"User-Agent": USER_AGENT})
-                data = r.json()
-            except Exception as exc:
-                logger.warning("Cargo chunk %d/%d attempt %d failed: %s", ci, len(chunks), attempt+1, exc)
-                time.sleep(1.5 ** attempt)
-                continue
+        try:
+            r = httpx.get(
+                f"https://{LP_HOST}/wiki/Special:CargoExport",
+                params=params,
+                timeout=30,
+                headers={"User-Agent": USER_AGENT},
+                follow_redirects=True,
+            )
+        except Exception as exc:
+            logger.warning("Cargo chunk %d/%d failed: %s", ci, len(chunks), exc)
+            time.sleep(1.0)
+            continue
 
-            err = data.get("error") or {}
-            err_code = err.get("code", "")
-            if err_code == "internal_api_error_MWException":
-                if attempt < 2:
-                    logger.info("Cargo chunk %d/%d MWException, retry %d/3 after %ds", ci, len(chunks), attempt+1, 1 + attempt)
-                    time.sleep(1 + attempt)
-                    continue
-                # Final attempt: split chunk in half and recurse — usually
-                # the smaller IN clause survives.
-                if len(chunk) > 1:
-                    mid = len(chunk) // 2
-                    logger.info("Cargo chunk %d/%d MWException after retries — splitting %d→%d+%d",
-                                ci, len(chunks), len(chunk), mid, len(chunk)-mid)
-                    sub_a = fetch_pros_via_cargo(chunk[:mid], site=site, chunk_size=mid)
-                    sub_b = fetch_pros_via_cargo(chunk[mid:], site=site, chunk_size=len(chunk)-mid)
-                    out.update(sub_a)
-                    out.update(sub_b)
-                    rows = []  # Already merged via recursion
-                    break
-                else:
-                    logger.warning("Cargo single-name failed irrevocably for: %s", chunk[0])
-                    break
-            elif err_code == "ratelimited":
-                wait = 5 + 5 * attempt
-                logger.warning("Cargo chunk %d/%d rate-limited, waiting %ds (attempt %d/3)",
-                               ci, len(chunks), wait, attempt+1)
-                time.sleep(wait)
-                continue
-            elif err_code:
-                logger.warning("Cargo chunk %d/%d API error: %s — %s",
-                               ci, len(chunks), err_code, err.get("info"))
-                break
-            rows = data.get("cargoquery", []) or []
-            break
+        # Special:CargoExport returns either a JSON array OR a plain-text
+        # error like 'Error: No field named "X" found...' — detect either.
+        if not r.text.startswith("["):
+            logger.warning("Cargo chunk %d/%d not JSON: %s",
+                           ci, len(chunks), r.text[:200])
+            continue
+
+        try:
+            rows = r.json() or []
+        except Exception as exc:
+            logger.warning("Cargo chunk %d/%d JSON parse failed: %s",
+                           ci, len(chunks), exc)
+            continue
 
         for row in rows:
-            t = row.get("title") or {}
-            key = t.get("OverviewPage") or t.get("Player") or ""
+            key = row.get("OverviewPage") or row.get("Player") or ""
             if key:
-                out[key] = t
-
+                out[key] = row
         logger.info("Cargo chunk %d/%d: %d rows", ci, len(chunks), len(rows))
+        # Special:CargoExport doesn't rate-limit but be polite anyway
         if ci < len(chunks):
-            # Cargo's per-IP rate limit on lol.fandom.com is roughly 1 req/sec
-            # for authenticated users. We pace at 1.5s with linear back-off
-            # whenever a `ratelimited` error is hit.
-            time.sleep(1.5)
+            time.sleep(0.3)
 
     logger.info("Cargo: %d unique pros from %d names", len(out), len(names))
     return out
@@ -1437,13 +1411,45 @@ def run_leaguepedia_sync_sync(db: Session, prefer_wikitext: bool = True) -> dict
         pros = fetch_pros_via_parse(target_names, site=site, pace_sec=0.5)
         used_path = "wikitext"
 
-        # NOTE: we previously tried a Cargo opportunistic pass to backfill
-        # missing birthdates, but Fandom's Cargo extension is rate-limited
-        # to ~1 req/sec AND throws intermittent MWException on bigger IN
-        # clauses (hangs the sync for 5+ min on a typical batch).
-        # Wikitext alone gets 107/471 birthdates; Cargo could top that up
-        # to maybe ~140 but isn't worth the unreliability today. Re-enable
-        # by calling fetch_pros_via_cargo() if Fandom fixes the throttle.
+        # 2nd pass: backfill missing birthdates / native names / teams
+        # via Special:CargoExport. The wikitext infobox often only stores
+        # `birth_date_year` (or nothing); Cargo's Players table holds the
+        # full ISO date for many more pros.
+        try:
+            logger.info("Cargo backfill: probing %d targets via Special:CargoExport", len(target_names))
+            cargo_rows = fetch_pros_via_cargo(target_names)
+            # Normalize keys: strip + lower + collapse underscores → spaces
+            # (wikitext OverviewPage = "Adam_(Adam_Maanane)", Cargo returns
+            #  "Adam (Adam Maanane)" — same page, different casing of separator)
+            def _norm(s) -> str:
+                return str(s or "").replace("_", " ").strip().lower()
+            cargo_by_name = {_norm(t.get("Player")): t for t in cargo_rows.values()}
+            cargo_by_overview = {_norm(t.get("OverviewPage")): t for t in cargo_rows.values()}
+            backfilled_birth = 0
+            backfilled_team = 0
+            backfilled_native = 0
+            for r in pros:
+                key1 = _norm(r.get("Player"))
+                key2 = _norm(r.get("OverviewPage"))
+                crow = cargo_by_overview.get(key2) or cargo_by_name.get(key1)
+                if not crow:
+                    continue
+                if not r.get("Birthdate") and crow.get("Birthdate"):
+                    r["Birthdate"] = crow["Birthdate"]
+                    backfilled_birth += 1
+                if not r.get("Team") and crow.get("Team"):
+                    r["Team"] = crow["Team"]
+                    backfilled_team += 1
+                if not r.get("Name") and crow.get("NativeName"):
+                    r["Name"] = crow["NativeName"]
+                    backfilled_native += 1
+            logger.info(
+                "Cargo backfill: +%d birthdates, +%d teams, +%d native names",
+                backfilled_birth, backfilled_team, backfilled_native,
+            )
+            used_path = "wikitext+cargo_export"
+        except Exception as exc:
+            logger.warning("Cargo backfill skipped (%s)", exc)
     else:
         logger.info("Leaguepedia: no Lolpros-matched names — bulk Cargo fetch")
         try:

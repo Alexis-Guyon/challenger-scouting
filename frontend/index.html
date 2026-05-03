@@ -478,6 +478,14 @@
   </section>
 </template>
 
-<script src="app.js"></script>
+<!-- Loaded in dependency order. No build step — each script defines
+     functions on the global scope so cross-module references just work
+     without import/export. -->
+<script src="js/api.js"></script>
+<script src="js/formatters.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/views.js"></script>
+<script src="js/player.js"></script>
+<script src="js/boot.js"></script>
 </body>
 </html>

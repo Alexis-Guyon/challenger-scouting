@@ -471,7 +471,7 @@ async function loadLeaderboard() {
       <td>${ageCell(row)}</td>
       <td>${tierBadge(row.tier)}</td>
       <td>${row.lp ?? '—'}</td>
-      <td>${roleIcon(row.role)}</td>
+      <td>${roleIcon(row.meta?.lp_role || row.role)}</td>
       <td>${row.patch || '—'}</td>
       <td>${row.games_played}</td>
       <td>${row.winrate}%</td>
@@ -527,7 +527,7 @@ async function loadWatchlist() {
       <td><strong>${row.summoner_name || '(unknown)'}</strong></td>
       <td>${tierBadge(row.tier)}</td>
       <td>${row.lp ?? '—'}</td>
-      <td>${roleIcon(row.role)}</td>
+      <td>${roleIcon(row.meta?.lp_role || row.role)}</td>
       <td>${row.games_played}</td>
       <td>${row.css_score!==null ? `<span class="score-pill ${scoreClass(row.css_score)}">${row.css_score}</span>` : '—'}</td>
       <td>${row.percentile_rank ?? '—'}</td>

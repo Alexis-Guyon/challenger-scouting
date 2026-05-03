@@ -30,21 +30,38 @@ from .lolesports_client import LolesportsClient, round_to_10s_iso
 logger = logging.getLogger(__name__)
 
 
-# Default leagues we care about for EU scouting. Slugs are stable on lolesports.
+# Default leagues we care about for global scouting.
+# Slugs probed against api.lolesports.com on 2026-05-03.
 DEFAULT_LEAGUE_SLUGS: tuple[str, ...] = (
-    "lec",            # LEC main
-    "lfl",            # France
-    "prime_league",   # DACH
-    "superliga",      # Spain
-    "nlc",            # NL/UK
-    "hitpoint",       # Czech/Slovak
-    "ebl",            # Balkans
-    "ultraliga",      # Poland
-    "elite_series",   # Benelux
+    # ── EMEA top tier ──
+    "lec",                                          # LEC main
+    # EMEA ERLs
+    "lfl",                                          # France
+    "prime_league",                                 # DACH
+    "superliga",                                    # Spain
+    "nlc",                                          # NL/UK/Ireland
+    "hitpoint",                                     # Czech/Slovak
+    "ebl",                                          # Balkans
+    "ultraliga",                                    # Poland
+    "elite_series",                                 # Benelux
     "esports_balkan_league",
     "lpl_cis",
-    "tcl",            # Turkey
+    "tcl",                                          # Turkey
     "northern_league_of_legends_championship",
+    # ── KR ──
+    "lck",                                          # LCK main
+    "lck_challengers_league",                       # LCK CL (academy / 2nd tier)
+    # ── Americas ──
+    "lcs",                                          # legacy LCS (still has historical games)
+    "nacl",                                         # NA Challengers
+    "lta_n",                                        # LTA North (current NA top tier)
+    "lta_s",                                        # LTA South (Latin America)
+    "lta_cross",                                    # LTA cross-conference
+    # ── International ──
+    "msi",
+    "worlds",
+    "first_stand",
+    "wqs",                                          # Worlds Qualifying Series
 )
 
 

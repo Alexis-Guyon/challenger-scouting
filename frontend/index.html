@@ -453,7 +453,11 @@
         <button id="a-lolpros">Sync Lolpros (EU pros)</button>
         <button id="a-leaguepedia" class="secondary" title="Quick sync: wikitext + Cargo (~75 s). Refresh after every SoloQ ingest.">Sync Leaguepedia (~75 s)</button>
         <button id="a-leaguepedia-full" class="secondary" title="Full sync: everything + bulk-crawl every EMEA pro's Lolpros profile (~6 min). Perfect puuid matching. Run weekly.">Sync Leaguepedia FULL (~6 min)</button>
-        <button id="a-tournaments" class="secondary">Sync tournaments (LEC + ERLs)</button>
+        <button id="a-tournaments" class="secondary" title="Sync ALL tracked leagues (EMEA + KR + NA + Intl). Takes 30-60 min on first run.">Sync tournaments (ALL)</button>
+        <button id="a-tournaments-eu" class="secondary" title="EMEA only: LEC + LFL + Prime + Superliga + ERLs">EU only</button>
+        <button id="a-tournaments-kr" class="secondary" title="KR only: LCK + LCK CL">KR only</button>
+        <button id="a-tournaments-na" class="secondary" title="Americas only: LCS + NACL + LTA N/S/Cross">NA only</button>
+        <button id="a-tournaments-intl" class="secondary" title="International: MSI + Worlds + First Stand + WQS">Intl only</button>
         <button id="a-resolve" class="secondary" title="Resolve Riot IDs of stub players (auto-imported as '(unknown)')">Resolve unknown names</button>
       </div>
       <p class="muted" style="font-size:11px;margin:8px 0 0;">Big batches: 300 players × 30 matches ≈ 18 000 Riot calls (~6 h at 100 req/2 min). Stub players auto-resolved + scoring rebuilt + alerts sent at the end. Re-running picks up where it stopped.</p>

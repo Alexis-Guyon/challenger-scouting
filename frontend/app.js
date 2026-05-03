@@ -1599,9 +1599,10 @@ function initAdmin() {
   document.getElementById('a-leaguepedia-full').addEventListener('click',
     () => syncLeaguepedia('/admin/sync-leaguepedia-full', 'FULL ~6 min, +Lolpros bulk'));
 
-  document.getElementById('a-tournaments').addEventListener('click', async () => {
-    log.textContent = 'Syncing tournaments (LEC + ERLs) — this can take 5-15 minutes...\n';
-    const r = await API('/admin/sync-tournaments', { method: 'POST' });
+  async function runTournamentSync(label, leaguesParam = '') {
+    log.textContent = `Syncing tournaments (${label}) — this can take 5-30 min depending on scope...\n`;
+    const url = '/admin/sync-tournaments' + (leaguesParam ? `?leagues=${encodeURIComponent(leaguesParam)}` : '');
+    const r = await API(url, { method: 'POST' });
     log.textContent += `Job ${r.job_id} started for: ${(r.leagues||[]).join(', ')}\n`;
     const poll = setInterval(async () => {
       try {
@@ -1612,7 +1613,19 @@ function initAdmin() {
         if (j.status === 'done' || j.status === 'error') { clearInterval(poll); refreshStats(); }
       } catch { clearInterval(poll); }
     }, 5000);
-  });
+  }
+
+  document.getElementById('a-tournaments').addEventListener('click',
+    () => runTournamentSync('ALL leagues'));
+  document.getElementById('a-tournaments-eu').addEventListener('click',
+    () => runTournamentSync('EMEA',
+      'lec,lfl,prime_league,superliga,nlc,hitpoint,ebl,ultraliga,elite_series,esports_balkan_league,lpl_cis,tcl,northern_league_of_legends_championship'));
+  document.getElementById('a-tournaments-kr').addEventListener('click',
+    () => runTournamentSync('KR', 'lck,lck_challengers_league'));
+  document.getElementById('a-tournaments-na').addEventListener('click',
+    () => runTournamentSync('Americas', 'lcs,nacl,lta_n,lta_s,lta_cross'));
+  document.getElementById('a-tournaments-intl').addEventListener('click',
+    () => runTournamentSync('International', 'msi,worlds,first_stand,wqs'));
 
   document.getElementById('a-resolve').addEventListener('click', async () => {
     const max = prompt('How many stub players to resolve? (default 200, max ~1000 in one batch):', '200');

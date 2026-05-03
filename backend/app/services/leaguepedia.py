@@ -364,43 +364,17 @@ def _find_image_via_page_search(canonical_name: str) -> str | None:
     return None
 
 
-def fetch_player_via_parse(canonical_name: str) -> dict | None:
-    """
-    Bypass Cargo. Pull the player's wiki page wikitext via action=query and
-    parse the infobox locally. Returns a dict with the same keys our Cargo
-    code expects (Player, Country, Birthdate, Role, IsRetired, ContractEnd,
-    Image), or None if the page doesn't exist.
-    """
-    if not canonical_name:
-        return None
-    import httpx
+def _record_from_page(page: dict, fallback_name: str = "") -> dict | None:
+    """Build a flat record from a single MediaWiki action=query page object.
 
-    title = canonical_name.replace(" ", "_")
-    try:
-        with httpx.Client(timeout=20.0, headers={"User-Agent": USER_AGENT}) as client:
-            r = client.get(
-                f"https://{LP_HOST}/api.php",
-                params={
-                    "action": "query",
-                    "prop": "revisions",
-                    "rvprop": "content",
-                    "rvslots": "main",
-                    "titles": title,
-                    "format": "json",
-                    "formatversion": "2",
-                    "redirects": "1",
-                },
-            )
-            r.raise_for_status()
-            data = r.json()
-    except Exception as exc:
-        logger.warning("Wikitext fetch failed for %s: %s", canonical_name, exc)
+    The page MUST have been queried with at least:
+        prop=revisions|pageimages
+        rvprop=content
+        rvslots=main
+        piprop=original|name
+    """
+    if not page or page.get("missing") or page.get("invalid"):
         return None
-
-    pages = data.get("query", {}).get("pages", []) or []
-    if not pages or pages[0].get("missing"):
-        return None
-    page = pages[0]
     revs = page.get("revisions") or []
     if not revs:
         return None
@@ -409,15 +383,24 @@ def fetch_player_via_parse(canonical_name: str) -> dict | None:
     if not info:
         return None
 
-    # Try to detect retired status from common fields
+    page_title = page.get("title") or fallback_name
     is_retired = info.get("isretired", "no").lower() in ("yes", "true", "1")
 
-    # We deliberately don't fetch the player's headshot here.
-    # The UI uses the Riot in-game profile icon instead — it's more reliable
-    # (always present), more current, and saves 1-2 API calls per pro.
-    page_title = page.get("title") or canonical_name
-    image_hint = None
+    # Photo URL: Leaguepedia attaches the player's portrait as the page's
+    # "page image" via {{PageImage}} in the infobox. action=query &
+    # prop=pageimages gives us the direct CDN URL with no extra round-trip.
     image_url = None
+    image_hint = None
+    original = page.get("original") or {}
+    if original.get("source"):
+        image_url = original["source"]
+        image_hint = page.get("pageimage")  # bare filename
+    # If pageimages didn't return one, try the infobox `image=` field.
+    if not image_url:
+        infobox_img = info.get("image") or info.get("portrait")
+        if infobox_img:
+            image_hint = infobox_img
+            image_url = _file_path_url(infobox_img)
 
     return {
         "Player": info.get("id") or page_title.replace("_", " "),
@@ -431,22 +414,227 @@ def fetch_player_via_parse(canonical_name: str) -> dict | None:
         "IsRetired": "1" if is_retired else "0",
         "SoloqueueIds": info.get("ids", "").replace("\n", ";"),
         "ContractEnd": info.get("contract") or info.get("contractend") or None,
-        "Image": image_hint,         # raw filename hint (back-compat)
-        "ImageUrl": image_url,       # verified direct CDN URL (preferred)
+        "Image": image_hint,
+        "ImageUrl": image_url,
     }
 
 
-def fetch_pros_via_parse(names: list[str], pace_sec: float = 1.0) -> list[dict]:
-    """Bulk wikitext fetch — much more reliable than Cargo when Cargo is broken."""
+def fetch_player_via_parse(canonical_name: str) -> dict | None:
+    """Single-page fetch — kept for back-compat. Prefer fetch_pros_via_parse
+    which batches up to 50 titles per request."""
+    if not canonical_name:
+        return None
+    results = fetch_pros_via_parse([canonical_name])
+    return results[0] if results else None
+
+
+def fetch_pros_via_parse(
+    names: list[str],
+    site: "mwclient.Site | None" = None,
+    pace_sec: float = 0.6,
+) -> list[dict]:
+    """Bulk wikitext + image fetch using the MediaWiki batch API.
+
+    MediaWiki accepts up to 50 titles per `action=query` (500 if
+    authenticated). Combined with `prop=revisions|pageimages` we get
+    wikitext + photo URL in one round-trip per chunk — orders of magnitude
+    faster than the old one-by-one path (8 min → ~10 s for 469 pros).
+
+    `site`: an authenticated mwclient.Site reuses its cookies for the
+    higher 500-title limit. When None we fall back to anonymous httpx
+    (still works, just capped at 50 titles per chunk and ~1 req/sec).
+    """
+    if not names:
+        return []
+    import httpx
+
+    authed = site is not None and getattr(site, "logged_in", False)
+    # MediaWiki caps `titles=` at 50 by default. The 500 limit is gated by
+    # the `apihighlimits` right which only sysops + flagged bots have. Our
+    # bot account (ChallengerScouting) has neither, so we stay at 50 even
+    # when authenticated. Auth still buys us a higher per-IP rate limit
+    # and faster CDN routing.
+    chunk_size = 50
+    base_params = {
+        "action": "query",
+        "prop": "revisions|pageimages",
+        "rvprop": "content",
+        "rvslots": "main",
+        "piprop": "original|name",
+        "format": "json",
+        "formatversion": "2",
+        "redirects": "1",
+    }
+
     out: list[dict] = []
-    for i, name in enumerate(names, start=1):
-        rec = fetch_player_via_parse(name)
-        if rec:
-            out.append(rec)
-        if i % 20 == 0:
-            logger.info("Wikitext: %d/%d processed (%d matched)", i, len(names), len(out))
-        time.sleep(pace_sec)
-    logger.info("Wikitext: fetched %d profiles from %d names", len(out), len(names))
+    title_to_query: dict[str, str] = {}  # original_input -> normalized title
+    for n in names:
+        if n:
+            title_to_query[n] = n.replace(" ", "_")
+
+    chunks = [list(title_to_query.items())[i:i + chunk_size]
+              for i in range(0, len(title_to_query), chunk_size)]
+
+    logger.info(
+        "Leaguepedia batch: %d names in %d chunk(s) (size=%d, %s)",
+        len(title_to_query), len(chunks), chunk_size,
+        "authenticated" if authed else "anonymous",
+    )
+
+    for ci, chunk in enumerate(chunks, start=1):
+        titles_param = "|".join(t for _, t in chunk)
+        params = {**base_params, "titles": titles_param}
+
+        try:
+            if authed:
+                # Reuse mwclient's authenticated requests session
+                resp = site.connection.get(
+                    f"https://{LP_HOST}/api.php",
+                    params=params,
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            else:
+                with httpx.Client(timeout=30.0, headers={"User-Agent": USER_AGENT}) as client:
+                    r = client.get(f"https://{LP_HOST}/api.php", params=params)
+                    r.raise_for_status()
+                    data = r.json()
+        except Exception as exc:
+            logger.warning("Leaguepedia batch %d/%d failed: %s", ci, len(chunks), exc)
+            time.sleep(pace_sec * 3)
+            continue
+
+        # Surface MediaWiki errors instead of silently swallowing them
+        # (we just got bitten by an unhandled "toomanyvalues" error
+        # returning {"error": {...}} but no "query" key, leading to
+        # 0 matches with no log line).
+        if data.get("error"):
+            err = data["error"]
+            logger.warning(
+                "Leaguepedia batch %d/%d API error: %s — %s",
+                ci, len(chunks), err.get("code"), err.get("info"),
+            )
+            time.sleep(pace_sec * 2)
+            continue
+        if data.get("warnings"):
+            for module, w in (data.get("warnings") or {}).items():
+                logger.info("Leaguepedia batch %d warning [%s]: %s", ci, module, w)
+
+        # MediaWiki returns:
+        #   query.normalized: [{from: input, to: normalized_title}, ...]
+        #   query.redirects:  [{from: ..., to: ...}, ...]
+        #   query.pages:      [{title, missing, revisions, pageimage, original, ...}]
+        # We need to track the input → final-title chain to match results.
+        q = data.get("query") or {}
+
+        # Build a forward map: any-name-we-encounter -> final page title
+        title_map: dict[str, str] = {}
+        for rule in q.get("normalized") or []:
+            title_map[rule["from"]] = rule["to"]
+        for rule in q.get("redirects") or []:
+            title_map[rule["from"]] = rule["to"]
+
+        # Resolve each chunk entry to its final title (apply chain transitively)
+        def _final_title(title: str) -> str:
+            seen = set()
+            t = title
+            while t in title_map and t not in seen:
+                seen.add(t)
+                t = title_map[t]
+            return t
+
+        page_by_title: dict[str, dict] = {p.get("title", ""): p for p in q.get("pages") or []}
+
+        chunk_matched = 0
+        for original_input, normalized_title in chunk:
+            final_title = _final_title(normalized_title)
+            page = page_by_title.get(final_title) or page_by_title.get(final_title.replace("_", " "))
+            if not page:
+                continue
+            rec = _record_from_page(page, fallback_name=original_input)
+            if rec:
+                out.append(rec)
+                chunk_matched += 1
+
+        logger.info(
+            "Leaguepedia batch %d/%d: %d/%d matched",
+            ci, len(chunks), chunk_matched, len(chunk),
+        )
+        if ci < len(chunks):
+            time.sleep(pace_sec)
+
+    logger.info("Leaguepedia batch: %d total profiles from %d names", len(out), len(names))
+
+    # ---- 2nd pass: resolve disambiguation pages ----
+    # When multiple pros share the same canonical name (Ace, Adam, Alvaro,
+    # Akuma…), Leaguepedia returns a {{DisambigPage |player1=… |player2=…}}
+    # template that has no infobox. We batch-refetch ALL disambig candidates
+    # (every targeted name we couldn't match), parse the template params,
+    # and recurse to grab the real player pages.
+    fetched_keys = {p["OverviewPage"].lower() for p in out}
+    fetched_keys |= {p["Player"].lower() for p in out}
+    candidate_disambigs = [
+        (orig, norm) for orig, norm in title_to_query.items()
+        if orig.lower() not in fetched_keys
+    ]
+    disambig_targets: list[str] = []
+    if candidate_disambigs:
+        import re as _re
+        # Re-batch them with prop=revisions just like the main pass
+        for ci, chunk in enumerate(
+            [candidate_disambigs[i:i + chunk_size]
+             for i in range(0, len(candidate_disambigs), chunk_size)],
+            start=1,
+        ):
+            titles_param = "|".join(t for _, t in chunk)
+            params2 = {
+                "action": "query", "titles": titles_param,
+                "prop": "revisions", "rvprop": "content", "rvslots": "main",
+                "format": "json", "formatversion": "2", "redirects": "1",
+            }
+            try:
+                if authed:
+                    d = site.connection.get(f"https://{LP_HOST}/api.php", params=params2, timeout=30).json()
+                else:
+                    with httpx.Client(timeout=30.0, headers={"User-Agent": USER_AGENT}) as c:
+                        d = c.get(f"https://{LP_HOST}/api.php", params=params2).json()
+            except Exception:
+                continue
+            if d.get("error"):
+                continue
+            for p in (d.get("query") or {}).get("pages") or []:
+                revs = p.get("revisions") or []
+                if not revs:
+                    continue
+                content = (revs[0].get("slots") or {}).get("main", {}).get("content", "")
+                if "{{DisambigPage" not in content and "{{Disambig" not in content:
+                    continue
+                # Template params: |playerN=Page Title (Real Name)
+                for m in _re.finditer(r"\|\s*player\d*\s*=\s*([^|}\n]+)", content, _re.IGNORECASE):
+                    lnk = m.group(1).strip()
+                    if lnk and lnk not in disambig_targets:
+                        disambig_targets.append(lnk)
+                # Fallback: plain wiki-links (older disambig style)
+                for lnk in _re.findall(r"\[\[([^|\[\]]+?)\|[^\[\]]+?\]\]", content):
+                    lnk = lnk.strip()
+                    if "(" in lnk and ")" in lnk and lnk not in disambig_targets:
+                        disambig_targets.append(lnk)
+            if ci < (len(candidate_disambigs) + chunk_size - 1) // chunk_size:
+                time.sleep(pace_sec)
+
+    if disambig_targets:
+        logger.info(
+            "Leaguepedia 2nd pass: %d disambig links to resolve",
+            len(disambig_targets),
+        )
+        # Recurse with just the disambig targets — these are real player pages
+        # so they'll resolve cleanly. Pass site=None to avoid an infinite
+        # disambig loop (these targets will themselves never be disambigs).
+        extra = fetch_pros_via_parse(disambig_targets, site=site, pace_sec=pace_sec)
+        out.extend(extra)
+        logger.info("Leaguepedia 2nd pass: %d more profiles fetched", len(extra))
+
     return out
 
 
@@ -939,15 +1127,22 @@ def run_leaguepedia_sync_sync(db: Session, prefer_wikitext: bool = True) -> dict
     pros: list[dict] = []
     used_path = "none"
 
+    # Connect upfront so the wikitext path can reuse the authed session
+    # (5x larger batches: 500 titles/req vs 50 anonymous).
+    try:
+        site = _connect()
+    except Exception as exc:
+        logger.warning("Leaguepedia connect failed: %s — wikitext will run anonymous", exc)
+        site = None
+
     if target_names and prefer_wikitext:
         logger.info(
-            "Leaguepedia: wikitext-parse sync for %d names (Cargo bypass)",
-            len(target_names),
+            "Leaguepedia: batched wikitext sync for %d names (auth=%s)",
+            len(target_names), _AUTH_STATE.get("authed", False),
         )
-        pros = fetch_pros_via_parse(target_names, pace_sec=1.0)
+        pros = fetch_pros_via_parse(target_names, site=site, pace_sec=0.6)
         used_path = "wikitext"
         if len(pros) < 5 and len(target_names) > 10:
-            # Wikitext path failed too — try Cargo as a last resort.
             logger.warning("wikitext returned only %d/%d — trying Cargo", len(pros), len(target_names))
             try:
                 pros = fetch_pros_by_name(target_names)
@@ -961,7 +1156,7 @@ def run_leaguepedia_sync_sync(db: Session, prefer_wikitext: bool = True) -> dict
             used_path = "cargo_targeted"
         except Exception as exc:
             logger.warning("Cargo failed (%s) — falling back to wikitext", exc)
-            pros = fetch_pros_via_parse(target_names, pace_sec=1.0)
+            pros = fetch_pros_via_parse(target_names, site=site, pace_sec=0.6)
             used_path = "wikitext_fallback"
     else:
         logger.info("Leaguepedia: no Lolpros-matched names — bulk Cargo fetch")

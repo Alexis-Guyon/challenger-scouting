@@ -335,10 +335,24 @@ function ageCell(p) {
   if (!p.meta || !p.meta.age) return '<span class="muted">—</span>';
   return p.meta.age;
 }
-function tierBadge(tier) {
+// Tier icons (sourced from lolpros.gg's CDN). Only Challenger /
+// Grandmaster / Master have official SVGs; lower tiers (Diamond /
+// Emerald / Platinum / etc.) keep the text badge.
+const TIER_ICON_URLS = {
+  CHALLENGER:  'https://lolpros.gg/_nuxt/img/challenger.3b4ad49.svg',
+  GRANDMASTER: 'https://lolpros.gg/_nuxt/img/grandmaster.b96750d.svg',
+  MASTER:      'https://lolpros.gg/_nuxt/img/master.f890053.svg',
+};
+function tierBadge(tier, opts = {}) {
   if (!tier) return '<span class="muted">—</span>';
-  const cls = `tier-${tier.toUpperCase()}`;
-  return `<span class="tier-badge ${cls}">${tier}</span>`;
+  const upper = String(tier).toUpperCase();
+  const url = TIER_ICON_URLS[upper];
+  const size = opts.size || 22;
+  if (url) {
+    return `<img class="tier-icon tier-icon-${upper.toLowerCase()}" src="${url}" alt="${upper}" title="${upper}" width="${size}" height="${size}"/>`;
+  }
+  // Fallback: classic text badge for Diamond / Emerald / etc.
+  return `<span class="tier-badge tier-${upper}">${tier}</span>`;
 }
 function risingBadge(row) {
   return row.is_rising_star
@@ -1334,7 +1348,7 @@ function initCompare() {
         <th style="vertical-align:top;min-width:160px;">
           <div style="font-size:13px;font-weight:700;text-transform:none;letter-spacing:0;color:var(--text);">${d.summoner_name}</div>
           <div class="muted" style="font-size:11px;font-weight:500;text-transform:none;letter-spacing:0;margin-top:3px;">
-            ${d.tier ? '<span class="tier-badge tier-'+d.tier+'">'+d.tier+'</span>' : ''}
+            ${d.tier ? tierBadge(d.tier, { size: 18 }) : ''}
             ${d.lp != null ? d.lp + ' LP' : ''}
             ${d.age ? '· '+d.age+'y' : ''}
             ${d.current_team_tag ? '· '+d.current_team_tag : ''}

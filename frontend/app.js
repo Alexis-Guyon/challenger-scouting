@@ -417,6 +417,8 @@ async function loadLeaderboard() {
   data.forEach((row, i) => {
     const watched = _watchedSet.has(row.puuid);
     const tr = document.createElement('tr');
+    tr.className = 'lb-row';
+    tr.dataset.puuid = row.puuid;
     tr.innerHTML = `
       <td>${_lbOffset + i + 1}</td>
       <td><strong>${row.summoner_name || '(unknown)'}</strong> ${smurfBadge(row)}${risingBadge(row)}</td>
@@ -434,18 +436,28 @@ async function loadLeaderboard() {
       <td><span class="score-pill ${scoreClass(row.css_score)}">${row.css_score}</span></td>
       <td>${row.percentile_rank == null ? '<span class="muted" title="Cohort too small (<10 players) for a meaningful percentile">—</span>' : 'P'+row.percentile_rank}</td>
       <td>${smurfCell(row)}</td>
-      <td>
-        <span class="star ${watched?'active':''}" data-puuid="${row.puuid}">${watched?'★':'☆'}</span>
-        <button data-puuid="${row.puuid}" class="secondary view-player">View</button>
+      <td class="lb-actions-cell">
+        <span class="star ${watched?'active':''}" data-puuid="${row.puuid}" title="Toggle watchlist">${watched?'★':'☆'}</span>
+        <span class="lb-view-arrow" aria-label="Open profile">›</span>
       </td>
     `;
     tbody.appendChild(tr);
   });
-  document.querySelectorAll('.view-player').forEach(b =>
-    b.addEventListener('click', () => { window._selectedPuuid = b.dataset.puuid; setView('player'); })
-  );
+
+  // Whole row is clickable now — open profile unless click hit the star
+  // (the star handles its own thing and stops propagation).
+  document.querySelectorAll('tr.lb-row').forEach(tr => {
+    tr.addEventListener('click', (e) => {
+      if (e.target.closest('.star')) return;
+      window._selectedPuuid = tr.dataset.puuid;
+      setView('player');
+    });
+  });
   document.querySelectorAll('.star').forEach(s =>
-    s.addEventListener('click', () => toggleWatch(s.dataset.puuid, s))
+    s.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleWatch(s.dataset.puuid, s);
+    })
   );
 }
 function initLeaderboard() {

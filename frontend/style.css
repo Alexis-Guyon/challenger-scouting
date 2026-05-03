@@ -330,6 +330,53 @@ td.css { font-weight: 700; }
 td { color: var(--text-2); }
 td strong { color: var(--text); }
 
+/* ---------- Ladder rows: clickable + sticky right action col ---------- */
+/* Whole row is the clickable target. Hover state is more pronounced than
+   the default table hover so it reads as interactive. */
+tr.lb-row { cursor: pointer; }
+tr.lb-row:hover td { background: rgba(91,141,239,0.10); }
+tr.lb-row:hover strong { color: var(--accent); }
+
+/* Action column (star + open arrow) stays glued to the right edge during
+   horizontal scroll — no more "scroll all the way right to find View". */
+.lb-actions-cell {
+  position: sticky;
+  right: 0;
+  background: var(--card);
+  border-left: 1px solid var(--line);
+  z-index: 1;
+  text-align: right;
+  white-space: nowrap;
+  padding-right: 14px !important;
+}
+tr.lb-row:hover .lb-actions-cell {
+  background: var(--card-2);  /* match hovered row tint */
+}
+/* The header for the action column also needs to stick during horizontal
+   scroll — without this it scrolls out while its body cell stays put. */
+#lb-table thead th:last-child {
+  position: sticky;
+  right: 0;
+  z-index: 3;            /* > tbody td sticky (1) and > thead default (2) */
+  background: var(--bg-2);
+  border-left: 1px solid var(--line);
+}
+
+/* Subtle chevron that hints at navigation, replacing the bulky View button */
+.lb-view-arrow {
+  display: inline-block;
+  margin-left: 8px;
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 18px;
+  line-height: 1;
+  transition: color 0.12s var(--ease), transform 0.12s var(--ease);
+}
+tr.lb-row:hover .lb-view-arrow {
+  color: var(--accent);
+  transform: translateX(2px);
+}
+
 /* ---------- Score pills (CSS tier) ---------- */
 .score-pill {
   display: inline-flex;

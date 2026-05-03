@@ -196,6 +196,35 @@ function setView(name) {
 navLinks.forEach(a => a.addEventListener('click', e => { e.preventDefault(); setView(a.dataset.view); }));
 
 // Smurf-likelihood score (0..100). Higher = more suspect.
+// Role icons (sourced from lolpros.gg's CDN). Each Riot role maps to one
+// SVG. We accept a few naming conventions: TOP / JGL / JNG / JUNGLE /
+// MID / ADC / BOT / BOTTOM / SUP / SUPPORT.
+const ROLE_ICON_URLS = {
+  top:     'https://lolpros.gg/_nuxt/img/top.714b08c.svg',
+  jungle:  'https://lolpros.gg/_nuxt/img/jungle.a1fa469.svg',
+  mid:     'https://lolpros.gg/_nuxt/img/mid.54ff92a.svg',
+  bottom:  'https://lolpros.gg/_nuxt/img/bottom.a947d38.svg',
+  support: 'https://lolpros.gg/_nuxt/img/support.2f8a4f6.svg',
+};
+const ROLE_NORMALIZE = {
+  top: 'top', t: 'top',
+  jgl: 'jungle', jng: 'jungle', jng_: 'jungle', jungle: 'jungle', jg: 'jungle',
+  mid: 'mid', m: 'mid', middle: 'mid',
+  adc: 'bottom', bot: 'bottom', bottom: 'bottom', ad: 'bottom',
+  sup: 'support', supp: 'support', support: 'support', sp: 'support', s: 'support',
+};
+function roleIcon(role, opts = {}) {
+  if (!role || role === '—') return '<span class="muted">—</span>';
+  const norm = ROLE_NORMALIZE[String(role).toLowerCase()];
+  if (!norm) {
+    // Unknown role — fall back to bold uppercase text (e.g. "SoloQ", "LEC", "EUW")
+    return `<span class="role-tag">${String(role).toUpperCase()}</span>`;
+  }
+  const label = String(role).toUpperCase();
+  const size = opts.size || 18;
+  return `<img class="role-icon" src="${ROLE_ICON_URLS[norm]}" alt="${label}" title="${label}" width="${size}" height="${size}"/>`;
+}
+
 // Compact region pill for the ladder + profile header.
 const REGION_LABELS = {
   euw1:'EUW', kr:'KR', na1:'NA', eun1:'EUNE', br1:'BR', jp1:'JP',
@@ -428,7 +457,7 @@ async function loadLeaderboard() {
       <td>${ageCell(row)}</td>
       <td>${tierBadge(row.tier)}</td>
       <td>${row.lp ?? '—'}</td>
-      <td><span class="role-tag">${row.role || '—'}</span></td>
+      <td>${roleIcon(row.role)}</td>
       <td>${row.patch || '—'}</td>
       <td>${row.games_played}</td>
       <td>${row.winrate}%</td>
@@ -484,7 +513,7 @@ async function loadWatchlist() {
       <td><strong>${row.summoner_name || '(unknown)'}</strong></td>
       <td>${tierBadge(row.tier)}</td>
       <td>${row.lp ?? '—'}</td>
-      <td><span class="role-tag">${row.role || '—'}</span></td>
+      <td>${roleIcon(row.role)}</td>
       <td>${row.games_played}</td>
       <td>${row.css_score!==null ? `<span class="score-pill ${scoreClass(row.css_score)}">${row.css_score}</span>` : '—'}</td>
       <td>${row.percentile_rank ?? '—'}</td>
@@ -551,7 +580,7 @@ function renderChampionGrid() {
         <div style="flex:1;min-width:0;">
           <div class="champion-card-name">${c.champion_name}</div>
           <div class="champion-card-meta">
-            <span class="role-tag">${c.role}</span>
+            ${roleIcon(c.role, { size: 16 })}
             ${c.latest_patch ? ` · ${c.latest_patch}` : ''}
           </div>
         </div>
@@ -955,7 +984,7 @@ async function loadPlayer(puuid) {
             ${data.recent_matches.slice(0,15).map(r => `
               <tr class="match-row" data-mid="${r.match_id}" style="cursor:pointer;">
                 <td>${r.champion_name}</td>
-                <td>${r.role}</td>
+                <td>${roleIcon(r.role, { size: 16 })}</td>
                 <td>${r.kills}/${r.deaths}/${r.assists}</td>
                 <td class="${r.gd15>=0?'delta-pos':'delta-neg'}">${r.gd15}</td>
                 <td>${(r.dmg_share*100).toFixed(1)}%</td>
@@ -1701,7 +1730,7 @@ function renderMatchModal(data) {
         <h4 class="muted-h4">🔵 Blue side ${data.blue_win ? '(WIN)' : ''}</h4>
         ${blueSide.map(p => `
           <div class="stat-row">
-            <span class="label">${p.role || ''} · ${p.champion}</span>
+            <span class="label">${roleIcon(p.role, { size: 14 })} ${p.champion}</span>
             <span class="value">${p.summoner_name || '?'} · ${p.kills}/${p.deaths}/${p.assists}</span>
           </div>
         `).join('')}
@@ -1710,7 +1739,7 @@ function renderMatchModal(data) {
         <h4 class="muted-h4">🔴 Red side ${!data.blue_win ? '(WIN)' : ''}</h4>
         ${redSide.map(p => `
           <div class="stat-row">
-            <span class="label">${p.role || ''} · ${p.champion}</span>
+            <span class="label">${roleIcon(p.role, { size: 14 })} ${p.champion}</span>
             <span class="value">${p.summoner_name || '?'} · ${p.kills}/${p.deaths}/${p.assists}</span>
           </div>
         `).join('')}
@@ -2099,7 +2128,7 @@ function renderTournamentMatchModal(data, matchId) {
     const parts = team.participants || [];
     return parts.map(p => `
       <tr ${p.riot_puuid ? `class="tn-roster-row" data-puuid="${p.riot_puuid}" style="cursor:pointer;"` : ''}>
-        <td><span class="role-tag">${(p.role || '?').toUpperCase().slice(0,3)}</span></td>
+        <td>${roleIcon(p.role, { size: 18 })}</td>
         <td><strong>${p.player_name || '?'}</strong></td>
         <td>${p.champion || ''}</td>
         <td>${p.kills}/${p.deaths}/${p.assists}</td>

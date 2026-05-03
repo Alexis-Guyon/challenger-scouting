@@ -408,6 +408,23 @@ tr.lb-row:hover .lb-view-arrow {
   border: 1px solid rgba(34,211,164,0.22);
 }
 
+/* Role icons (TOP / JGL / MID / ADC / SUP) sourced from lolpros.gg's
+   CDN. The SVGs are dark silhouettes on transparent background, so
+   we invert them to read on our dark UI. */
+.role-icon {
+  display: inline-block;
+  vertical-align: middle;
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  filter: invert(0.78);
+  transition: filter 0.12s var(--ease);
+}
+tr.lb-row:hover .role-icon,
+.match-row:hover .role-icon {
+  filter: invert(1);
+}
+
 .tier-badge {
   display: inline-block;
   padding: 2px 8px;

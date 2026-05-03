@@ -434,66 +434,72 @@ def tournament_match_detail(match_id: str, db: Session = Depends(get_db)):
             "cs_at_15": sum(p.cs_at_15 for p in side_parts),
         }
 
-    # Pre-load all PlayerMetas with lolpros_profile_json once (so the
-    # 3rd fallback below is fast — we'd otherwise do N queries × the
-    # cost of decoding a JSON blob each time).
+    # Pre-load all PlayerMetas with lolpros_profile_json once.
+    import json as _json
     _all_metas_with_profile = db.query(PlayerMeta).filter(
         PlayerMeta.lolpros_profile_json.isnot(None)
     ).all()
+    # Build {normalized_lolpros_name: meta} index for fast match.
+    _lolpros_name_index: dict[str, PlayerMeta] = {}
+    for _m in _all_metas_with_profile:
+        try:
+            _profile = _json.loads(_m.lolpros_profile_json)
+        except Exception:
+            continue
+        for cand in _candidates_for_match(_profile.get("name") or ""):
+            _lolpros_name_index.setdefault(cand, _m)
+
+    # Build {normalized_riot_summoner: Player} index across the WHOLE DB
+    # (not just is_pro) so we catch ladder-ingested pros that haven't
+    # been Lolpros/Leaguepedia-tagged yet.
+    from ..models import Player as _Player
+    _all_players = db.query(_Player).all()
+    _summoner_name_index: dict[str, list] = {}
+    for _p in _all_players:
+        for cand in _candidates_for_match(_p.summoner_name or ""):
+            _summoner_name_index.setdefault(cand, []).append(_p)
 
     def _format_participant(p: OfficialMatchParticipant) -> dict:
-        # Resolve riot_puuid via 3 progressively looser strategies.
+        # Resolve riot_puuid via 4 progressively looser strategies.
         riot_puuid = None
 
-        # 1. Direct cross-link: PlayerMeta.lolesports_id was set during a
-        #    previous tournament sync match.
+        # 1. Direct cross-link: PlayerMeta.lolesports_id (set on prior pass).
         if p.pro_player_id:
             meta = db.query(PlayerMeta).filter_by(lolesports_id=p.pro_player_id).first()
             if meta:
                 riot_puuid = meta.puuid
 
-        # 2. Mine the cached Lolpros profiles: the profile's
-        #    league_player.accounts[*].encrypted_puuid is the Riot puuid.
-        #    Match the pro by name (lolesports' player_name vs Lolpros's
-        #    profile.name — both are the IGN/handle).
-        if not riot_puuid and p.player_name:
-            import json as _json
-            wanted = _normalize_for_match(p.player_name)
-            for meta in _all_metas_with_profile:
-                try:
-                    profile = _json.loads(meta.lolpros_profile_json)
-                except Exception:
-                    continue
-                if _normalize_for_match(profile.get("name") or "") != wanted:
-                    continue
-                # Match — store the link permanently and return the puuid
-                # of THIS Riot account (i.e. the puuid stored on PlayerMeta
-                # itself, since the cross-reference walks all metas and
-                # we only saved the row matching `pro_player_id`).
-                # The puuid here is whatever Riot account this PlayerMeta
-                # row belongs to — its primary one.
-                riot_puuid = meta.puuid
-                # Persist the lolesports cross-link so future calls hit
-                # path #1 instead of repeating this scan.
-                if p.pro_player_id and not meta.lolesports_id:
-                    meta.lolesports_id = p.pro_player_id
-                    db.commit()
-                break
+        # Build candidate normalizations from BOTH the player_name (e.g.
+        # "FNC Razork") AND the in-game summoner_name (e.g. "FNC Razork#xyz").
+        # _candidates_for_match strips the team prefix so we get "razork"
+        # and other variants — solves the false negatives where the wiki
+        # / Lolpros sides only have the bare IGN.
+        cand_set: set[str] = set()
+        if p.player_name:
+            cand_set.update(_candidates_for_match(p.player_name))
+        if p.summoner_name:
+            cand_set.update(_candidates_for_match(p.summoner_name))
 
-        # 3. Last resort: substring match on Player.summoner_name. Only
-        #    accept when there is EXACTLY ONE hit AND it's tagged is_pro,
-        #    to avoid false positives.
-        if not riot_puuid and p.player_name and len(p.player_name) >= 4:
-            from ..models import Player as _Player
-            hits = (
-                db.query(_Player, PlayerMeta)
-                .join(PlayerMeta, _Player.puuid == PlayerMeta.puuid)
-                .filter(_Player.summoner_name.ilike(f"%{p.player_name}%"))
-                .filter(PlayerMeta.is_pro == True)  # noqa: E712
-                .limit(2).all()
-            )
-            if len(hits) == 1:
-                riot_puuid = hits[0][0].puuid
+        # 2. Match against cached Lolpros profile names. The Lolpros
+        #    profile gives us the cleanest cross-reference (name="Razork").
+        if not riot_puuid:
+            for cand in cand_set:
+                meta = _lolpros_name_index.get(cand)
+                if meta:
+                    riot_puuid = meta.puuid
+                    if p.pro_player_id and not meta.lolesports_id:
+                        meta.lolesports_id = p.pro_player_id
+                        db.commit()
+                    break
+
+        # 3. Riot summoner_name match (uses pre-built index, fast).
+        #    Only accept exactly-one-hit to avoid false positives.
+        if not riot_puuid:
+            for cand in cand_set:
+                hits = _summoner_name_index.get(cand) or []
+                if len(hits) == 1:
+                    riot_puuid = hits[0].puuid
+                    break
 
         return {
             "pro_player_id": p.pro_player_id,

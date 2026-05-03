@@ -31,74 +31,7 @@ class LeaguepediaError(Exception):
     pass
 
 
-def _normalize_name(s: str) -> str:
-    """Strip riot tag, lowercase, drop non-alphanum for matching."""
-    if not s:
-        return ""
-    s = s.split("#")[0]
-    s = re.sub(r"^(twtv|trainer|coach|sub)\s+", "", s, flags=re.I)
-    s = re.sub(r"[^a-z0-9]", "", s.lower())
-    return s
-
-
-def _candidate_normalizations(s: str) -> list[str]:
-    """
-    Return every plausible normalized form of a Riot in-game name.
-
-    DOES NOT push single-word fragments shorter than 5 chars when the
-    original name has multiple words. The previous version pushed the
-    last word as a candidate (e.g. "Hide on Bush" → "bush"), which
-    caused collisions like sOAZ's KR alt "Baguette on bush" matching
-    Faker's "Hide on bush#KR1" via the shared "bush" candidate.
-    Every candidate generated below is the FULL base or a strict
-    transformation (prefix/suffix strip), never an arbitrary fragment.
-    """
-    if not s:
-        return []
-
-    base = s.split("#")[0].strip()
-    out: list[str] = []
-    seen: set[str] = set()
-
-    def push(x: str, strict_min_len: bool = False):
-        n = re.sub(r"[^a-z0-9]", "", x.lower())
-        if not n:
-            return
-        # Reject overly-generic fragments. Three letters or fewer = almost
-        # certain collision risk (bush/king/rat/cap/...). Four letters is
-        # the typical pro-IGN length (Caps, Otto, Hans, Faker→faker is 5,
-        # Lider→lider is 5) — we accept those when they're the FULL base.
-        if strict_min_len and len(n) < 5:
-            return
-        if n in seen:
-            return
-        seen.add(n)
-        out.append(n)
-
-    # 1. Full normalized base — always pushed (no length restriction)
-    push(base)
-
-    # 2. Strip streamer-style prefixes
-    no_prefix = re.sub(r"^(twtv|trainer|coach|sub)\s+", "", base, flags=re.I).strip()
-    if no_prefix != base:
-        push(no_prefix)
-
-    # 3. Strip team-tag prefix (e.g. "FNC Razork" → "Razork")
-    m = re.match(r"^([A-Z0-9]{1,5})\s+(.+)$", base)
-    if m:
-        push(m.group(2))
-
-    # 4. Strip role/account-type suffixes
-    no_suffix = re.sub(r"\s+(NEXT|academy|smurf|alt|main|\d+)$", "", base, flags=re.I).strip()
-    if no_suffix != base:
-        push(no_suffix)
-
-    # 5. Combination: team prefix stripped + suffix stripped
-    if m:
-        cleaned = re.sub(r"\s+(NEXT|academy|smurf|alt|main|\d+)$", "", m.group(2), flags=re.I).strip()
-        push(cleaned)
-
-    return out
+from .name_matching import strict_name_candidates as _candidate_normalizations  # noqa: F401
 
 
 def _calc_age(birthdate: str | None) -> Optional[int]:

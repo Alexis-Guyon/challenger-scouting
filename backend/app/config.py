@@ -1,4 +1,14 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# Make the .env path absolute so it's found regardless of which directory
+# uvicorn was launched from. Without this, Pydantic resolves "./env"
+# against the cwd — running uvicorn from the repo root (instead of from
+# backend/) silently makes every secret default to its empty string.
+_BACKEND_DIR = Path(__file__).resolve().parent.parent  # …/scouting/backend
+_ENV_FILE = _BACKEND_DIR / ".env"
 
 
 class Settings(BaseSettings):
@@ -36,7 +46,11 @@ class Settings(BaseSettings):
     alert_css_delta: float = 4.0         # raise an alert when CSS jumps by ≥ this
     alert_winrate_streak_min: int = 6    # min consecutive wins to alert
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=str(_ENV_FILE),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
 
 settings = Settings()

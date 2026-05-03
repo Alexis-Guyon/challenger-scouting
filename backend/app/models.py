@@ -298,6 +298,16 @@ class PlayerMeta(Base):
     lolpros_slug = Column(String, index=True)          # https://lolpros.gg/player/<slug>
     lolpros_profile_json = Column(Text)                # cached /es/profiles/<slug> body (social, prev teams, peak, seasons)
     player_image_url = Column(String)                  # Leaguepedia headshot (Special:FilePath URL)
+    # Bonus fields from Leaguepedia infobox (filled by /admin/sync-leaguepedia
+    # when present). Most pros have at least 2-3 social handles populated.
+    real_name = Column(String)                         # "Rasmus Borregaard Winther" (Caps), "Lee Sang-hyeok" (Faker)
+    alt_names = Column(String)                         # historic IGNs / competitive IDs
+    fav_champions = Column(Text)                       # CSV list, e.g. "Garen,Olaf,Darius,Sett"
+    twitter_handle = Column(String)                    # username OR full URL
+    twitch_url = Column(String)
+    instagram_handle = Column(String)
+    youtube_url = Column(String)
+    tiktok_handle = Column(String)
     last_synced = Column(DateTime)
 
 

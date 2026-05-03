@@ -52,6 +52,15 @@ NEW_COLUMNS = [
     ("official_match_participants", "csd_at_10", "INTEGER DEFAULT 0"),
     ("official_match_participants", "gold_at_10", "INTEGER DEFAULT 0"),
     ("official_match_participants", "cs_at_10", "INTEGER DEFAULT 0"),
+    # Leaguepedia-enriched player fields (real name + socials + fav champs)
+    ("player_meta", "real_name", "VARCHAR"),
+    ("player_meta", "alt_names", "VARCHAR"),
+    ("player_meta", "fav_champions", "TEXT"),
+    ("player_meta", "twitter_handle", "VARCHAR"),
+    ("player_meta", "twitch_url", "VARCHAR"),
+    ("player_meta", "instagram_handle", "VARCHAR"),
+    ("player_meta", "youtube_url", "VARCHAR"),
+    ("player_meta", "tiktok_handle", "VARCHAR"),
 ]
 
 

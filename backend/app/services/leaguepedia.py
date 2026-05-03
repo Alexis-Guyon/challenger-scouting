@@ -364,50 +364,70 @@ def _find_image_via_page_search(canonical_name: str) -> str | None:
     return None
 
 
-def fetch_all_active_pros_emea(
-    site: "mwclient.Site | None" = None,
+def fetch_all_active_pros(
+    residencies: list[str] | None = None,
     limit: int = 5000,
 ) -> list[dict]:
-    """Bulk-fetch every non-retired EMEA pro from Cargo Players table.
+    """Bulk-fetch every non-retired pro from Cargo Players table for the
+    given residency buckets. Returns the raw Cargo rows.
 
-    Used as the 3rd-pass enrichment source: pros NOT in Lolpros (Prime
-    League, NLC, LFL2, amateur ERL teams, sub-LEC, etc.) still have a
-    Leaguepedia entry. We bulk-fetch them all in 1 Cargo call (~5000
-    rows in ~5 s), then match against our Riot Players via two paths:
-    (a) parsed SoloqueueIds, (b) clean display-name match.
+    Cargo's distinct Residency values (probed 2026-05-03 on lol.fandom.com):
+        'EMEA' (4875), 'Korea' (690), 'North America' (1534),
+        'Asia Pacific' (890), 'Brazil' (914), 'China' (478),
+        'Vietnam' (4), 'Latin America' (1), legacy 'Europe' (~few)
 
-    Concrete example: Reeker#KZN (BIG mid laner, Prime League) is on
-    Leaguepedia (Player=Reeker, born 2001-05-15) but not on Lolpros —
-    this pass picks him up.
+    Default = EMEA + Korea + North America + Brazil + Asia Pacific
+    (the regions our Riot ingest covers).
     """
     import httpx
+
+    if not residencies:
+        residencies = ["EMEA", "Korea", "North America", "Brazil", "Asia Pacific"]
+    res_clause = " OR ".join(f'Residency="{r}"' for r in residencies)
+    # Keep legacy 'Europe' alias as a courtesy (a handful of older rows)
+    if "EMEA" in residencies:
+        res_clause += ' OR Residency="Europe"'
+
     fields = (
         "OverviewPage,Player,Name,NativeName,Birthdate,Country,"
         "NationalityPrimary,Residency,Team,Role,IsRetired,SoloqueueIds,Image"
     )
-    try:
-        r = httpx.get(
-            f"https://{LP_HOST}/wiki/Special:CargoExport",
-            params={
-                "tables": "Players", "fields": fields,
-                # Cargo stores both 'EMEA' (current) and 'Europe' (legacy)
-                "where": "IsRetired=0 AND (Residency=\"EMEA\" OR Residency=\"Europe\")",
-                "limit": str(limit), "format": "json",
-            },
-            timeout=45, headers={"User-Agent": USER_AGENT}, follow_redirects=True,
-        )
-    except Exception as exc:
-        logger.warning("Bulk EMEA Cargo fetch failed: %s", exc)
-        return []
-    if not r.text.startswith("["):
-        logger.warning("Bulk EMEA Cargo not JSON: %s", r.text[:200])
-        return []
-    try:
-        rows = r.json() or []
-    except Exception:
-        return []
-    logger.info("Bulk EMEA Cargo: %d active pros fetched", len(rows))
-    return rows
+    out: list[dict] = []
+    # CargoExport caps at ~5000 rows per query; chunk per-residency so
+    # we never hit the cap on a single call (NA alone has 1534, EMEA 4875).
+    for residency in residencies + (["Europe"] if "EMEA" in residencies else []):
+        try:
+            r = httpx.get(
+                f"https://{LP_HOST}/wiki/Special:CargoExport",
+                params={
+                    "tables": "Players", "fields": fields,
+                    "where": f'IsRetired=0 AND Residency="{residency}"',
+                    "limit": str(limit), "format": "json",
+                },
+                timeout=45, headers={"User-Agent": USER_AGENT}, follow_redirects=True,
+            )
+        except Exception as exc:
+            logger.warning("Cargo bulk %s failed: %s", residency, exc)
+            continue
+        if not r.text.startswith("["):
+            logger.warning("Cargo bulk %s not JSON: %s", residency, r.text[:200])
+            continue
+        try:
+            rows = r.json() or []
+        except Exception:
+            continue
+        logger.info("Cargo bulk %s: %d active pros", residency, len(rows))
+        out.extend(rows)
+    return out
+
+
+# Back-compat alias
+def fetch_all_active_pros_emea(
+    site: "mwclient.Site | None" = None,
+    limit: int = 5000,
+) -> list[dict]:
+    """Legacy EMEA-only bulk fetch — kept for callers that hard-coded EU."""
+    return fetch_all_active_pros(residencies=["EMEA"], limit=limit)
 
 
 def _parse_soloqueue_ids(raw: str) -> list[str]:
@@ -1380,31 +1400,50 @@ def sync_players_with_lookup(db: Session, lookup: dict[str, dict]) -> dict:
         if not rec:
             rec = puuid_index.get(p.puuid)
 
-        # Cross-region safeguard: the lookup contains only EMEA pros, so
-        # name-based matching for non-EU Riot accounts (KR/NA/JP/...)
-        # only produces collisions (e.g. Faker's KR "Hide on bush#KR1"
-        # matched sOAZ's KR alt "Baguette on bush" via shared 'bush'
-        # fragment). For non-EU accounts, we ONLY accept the perfect
-        # puuid match — already attempted as Priority 0 above.
-        EU_REGIONS = {"euw1", "eun1", "tr1", "ru"}
-        is_eu_account = (p.region or "").lower() in EU_REGIONS
+        # Region-aware matching. Each Cargo record is tagged with its
+        # Residency. We match a Riot account only against records whose
+        # residency is consistent with the Riot account's platform —
+        # this kills the cross-region collision (Faker's KR
+        # "Hide on bush#KR1" was matching sOAZ's KR alt
+        # "Baguette on bush" because both indexed the 'bush' fragment).
+        PLATFORM_TO_RESIDENCY = {
+            "euw1": "EMEA", "eun1": "EMEA", "tr1": "EMEA", "ru": "EMEA",
+            "kr": "Korea",
+            "na1": "North America",
+            "br1": "Brazil",
+            "jp1": "Asia Pacific", "oc1": "Asia Pacific",
+            "la1": "Latin America", "la2": "Latin America",
+        }
+        expected_residency = PLATFORM_TO_RESIDENCY.get((p.region or "").lower())
+
+        def _residency_matches(record: dict) -> bool:
+            if not expected_residency:
+                return True  # Unknown platform — don't restrict
+            r_res = record.get("_residency") or record.get("Residency") or ""
+            # Accept legacy 'Europe' as EMEA
+            if expected_residency == "EMEA" and r_res in ("EMEA", "Europe"):
+                return True
+            return r_res == expected_residency
 
         # Priority 1: if Lolpros already mapped this Riot ID to a
-        # Leaguepedia canonical name (meta.leaguepedia_id), use that.
-        # Allowed for non-EU too because leaguepedia_id is set by an
-        # explicit cross-link (not a fuzzy match).
+        # Leaguepedia canonical name, use that — but only if the
+        # residency matches. Without this check, a stale (wrong)
+        # leaguepedia_id from a previous bug-affected sync survives
+        # and re-matches an EMEA pro to a KR Riot account.
         if not rec and meta.leaguepedia_id:
             for cand in _candidate_normalizations(meta.leaguepedia_id):
-                if cand in lookup:
-                    rec = lookup[cand]
+                hit = lookup.get(cand)
+                if hit and _residency_matches(hit):
+                    rec = hit
                     break
 
-        # Priority 2: fall back to summoner-name candidates. EU only —
-        # non-EU accounts keep their previous metadata or stay unidentified.
-        if not rec and is_eu_account:
+        # Priority 2: summoner-name candidates, BUT only accept records
+        # whose Residency matches the Riot account's platform region.
+        if not rec:
             for candidate in _candidate_normalizations(p.summoner_name or ""):
-                if candidate in lookup:
-                    rec = lookup[candidate]
+                hit = lookup.get(candidate)
+                if hit and _residency_matches(hit):
+                    rec = hit
                     break
 
         if rec:
@@ -1603,25 +1642,31 @@ def run_leaguepedia_sync_sync(
             logger.warning("Cargo backfill skipped (%s)", exc)
 
         # 3rd pass: pick up pros NOT in Lolpros via bulk Cargo fetch.
-        # ~5000 active EMEA pros in one query.
+        # We pull ALL major residencies (EMEA + Korea + NA + Brazil +
+        # Asia Pacific) so the lookup covers every region our Riot
+        # ingest hits, not just EU.
         try:
-            emea_rows = fetch_all_active_pros_emea()
-            if emea_rows:
+            global_rows = fetch_all_active_pros(
+                residencies=["EMEA", "Korea", "North America", "Brazil", "Asia Pacific"],
+            )
+            if global_rows:
                 seen_overview = {str(r.get("OverviewPage") or "").lower() for r in pros}
                 added = 0
-                for row in emea_rows:
+                for row in global_rows:
                     op = str(row.get("OverviewPage") or "").lower()
                     if op in seen_overview:
                         continue
                     rec = _cargo_to_record(row)
                     rec["_soloqueue_candidates"] = _parse_soloqueue_ids(row.get("SoloqueueIds"))
+                    # Tag with residency so the matcher can scope correctly
+                    rec["_residency"] = row.get("Residency") or rec.get("Residency")
                     pros.append(rec)
                     seen_overview.add(op)
                     added += 1
-                logger.info("3rd pass (Cargo EMEA bulk): +%d pros", added)
-                used_path = "wikitext+cargo_export+emea_bulk"
+                logger.info("3rd pass (Cargo global bulk): +%d pros", added)
+                used_path = "wikitext+cargo_export+global_bulk"
         except Exception as exc:
-            logger.warning("3rd pass (EMEA bulk) skipped (%s)", exc)
+            logger.warning("3rd pass (global bulk) skipped (%s)", exc)
 
         # 4th pass (OPTIONAL — only when with_lolpros_bulk=True).
         # Bulk-crawl every active EMEA pro's Lolpros profile. Slow

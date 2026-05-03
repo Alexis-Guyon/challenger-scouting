@@ -298,12 +298,12 @@ def system_stats(db: Session = Depends(get_db)):
     }
 
 
-def _sync_leaguepedia_job(job_id: str):
+def _sync_leaguepedia_job(job_id: str, with_lolpros_bulk: bool = False):
     update_job(job_id, status="running", step="fetching")
     try:
         db = SessionLocal()
         try:
-            stats = run_leaguepedia_sync_sync(db)
+            stats = run_leaguepedia_sync_sync(db, with_lolpros_bulk=with_lolpros_bulk)
         finally:
             db.close()
         update_job(job_id, status="done", step="done", extras_merge={"stats": stats})
@@ -360,9 +360,25 @@ def sync_lolpros(background: BackgroundTasks, server: str = Query(default="EUW")
 
 @router.post("/sync-leaguepedia")
 def sync_leaguepedia(background: BackgroundTasks):
+    """Quick sync (~75 s): wikitext infobox + Cargo backfill + bulk EMEA Cargo.
+    Skips the slow per-pro Lolpros profile crawl. Use this for routine
+    refresh after a SoloQ ingest. For the full deep enrichment, use
+    /admin/sync-leaguepedia-full."""
     job_id = next_job_id("lp")
-    create_job(job_id, "leaguepedia")
-    background.add_task(_sync_leaguepedia_job, job_id)
+    create_job(job_id, "leaguepedia", params={"with_lolpros_bulk": False})
+    background.add_task(_sync_leaguepedia_job, job_id, False)
+    return {"job_id": job_id, "status": "started"}
+
+
+@router.post("/sync-leaguepedia-full")
+def sync_leaguepedia_full(background: BackgroundTasks):
+    """Full sync (~6 min): everything in /sync-leaguepedia + a bulk crawl
+    of every active EMEA pro's Lolpros profile (~5000 fetches at
+    concurrency 8). This unlocks perfect puuid-based pro matching and
+    pulls Lolpros team / slug / accounts / social. Run this once a week."""
+    job_id = next_job_id("lpf")
+    create_job(job_id, "leaguepedia_full", params={"with_lolpros_bulk": True})
+    background.add_task(_sync_leaguepedia_job, job_id, True)
     return {"job_id": job_id, "status": "started"}
 
 

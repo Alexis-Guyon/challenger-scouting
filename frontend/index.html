@@ -451,7 +451,8 @@
         <button id="a-ingest">Run ingestion</button>
         <button id="a-recompute" class="secondary">Recompute scores only</button>
         <button id="a-lolpros">Sync Lolpros (EU pros)</button>
-        <button id="a-leaguepedia" class="secondary">Sync Leaguepedia (fallback)</button>
+        <button id="a-leaguepedia" class="secondary" title="Quick sync: wikitext + Cargo (~75 s). Refresh after every SoloQ ingest.">Sync Leaguepedia (~75 s)</button>
+        <button id="a-leaguepedia-full" class="secondary" title="Full sync: everything + bulk-crawl every EMEA pro's Lolpros profile (~6 min). Perfect puuid matching. Run weekly.">Sync Leaguepedia FULL (~6 min)</button>
         <button id="a-tournaments" class="secondary">Sync tournaments (LEC + ERLs)</button>
         <button id="a-resolve" class="secondary" title="Resolve Riot IDs of stub players (auto-imported as '(unknown)')">Resolve unknown names</button>
       </div>

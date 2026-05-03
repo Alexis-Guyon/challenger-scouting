@@ -1580,9 +1580,9 @@ function initAdmin() {
     }, 2000);
   });
 
-  document.getElementById('a-leaguepedia').addEventListener('click', async () => {
-    log.textContent = 'Syncing Leaguepedia metadata for EU pros...\n';
-    const r = await API('/admin/sync-leaguepedia', { method: 'POST' });
+  async function syncLeaguepedia(endpoint, label) {
+    log.textContent = `Syncing Leaguepedia (${label})...\n`;
+    const r = await API(endpoint, { method: 'POST' });
     log.textContent += `Job ${r.job_id} started.\n`;
     const poll = setInterval(async () => {
       try {
@@ -1592,7 +1592,12 @@ function initAdmin() {
         if (j.status === 'done' || j.status === 'error') { clearInterval(poll); refreshStats(); }
       } catch { clearInterval(poll); }
     }, 2000);
-  });
+  }
+
+  document.getElementById('a-leaguepedia').addEventListener('click',
+    () => syncLeaguepedia('/admin/sync-leaguepedia', 'quick ~75s'));
+  document.getElementById('a-leaguepedia-full').addEventListener('click',
+    () => syncLeaguepedia('/admin/sync-leaguepedia-full', 'FULL ~6 min, +Lolpros bulk'));
 
   document.getElementById('a-tournaments').addEventListener('click', async () => {
     log.textContent = 'Syncing tournaments (LEC + ERLs) — this can take 5-15 minutes...\n';

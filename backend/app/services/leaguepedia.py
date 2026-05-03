@@ -1500,7 +1500,11 @@ def sync_players_with_lookup(db: Session, lookup: dict[str, dict]) -> dict:
     }
 
 
-def run_leaguepedia_sync_sync(db: Session, prefer_wikitext: bool = True) -> dict:
+def run_leaguepedia_sync_sync(
+    db: Session,
+    prefer_wikitext: bool = True,
+    with_lolpros_bulk: bool = False,
+) -> dict:
     """
     Synchronous Leaguepedia sync.
 
@@ -1608,68 +1612,68 @@ def run_leaguepedia_sync_sync(db: Session, prefer_wikitext: bool = True) -> dict
         except Exception as exc:
             logger.warning("3rd pass (EMEA bulk) skipped (%s)", exc)
 
-        # 4th pass: enrich the entire pros list with Lolpros profiles.
-        # For each pro on Leaguepedia, derive a Lolpros slug guess and
-        # bulk-fetch profiles concurrently. This gives us the
-        # `encrypted_puuid` of every account → perfect Riot-account match
-        # without any name normalization. Also fills SoloqueueIds when
-        # the wiki was missing them (we use the highest-ranked Lolpros
-        # account as fallback IGN).
-        try:
-            from .lolpros import (
-                fetch_lolpros_profiles_bulk,
-                lolpros_slug_guess,
-                best_account_in_profile,
-                extract_puuids_from_profile,
-                _rank_score,
-            )
-            import asyncio as _asyncio
+        # 4th pass (OPTIONAL — only when with_lolpros_bulk=True).
+        # Bulk-crawl every active EMEA pro's Lolpros profile. Slow
+        # (~5 min for 4875 fetches at concurrency 8) but unlocks perfect
+        # puuid-based matching + Lolpros team / slug / accounts data.
+        # Skipped by default so the regular Sync Leaguepedia button
+        # stays at ~75 s. Trigger via /admin/sync-leaguepedia-full.
+        if with_lolpros_bulk:
+            try:
+                from .lolpros import (
+                    fetch_lolpros_profiles_bulk,
+                    lolpros_slug_guess,
+                    best_account_in_profile,
+                    extract_puuids_from_profile,
+                )
+                import asyncio as _asyncio
 
-            slug_to_rec: dict[str, dict] = {}
-            for rec in pros:
-                slug = lolpros_slug_guess(rec.get("Player"))
-                if slug and slug not in slug_to_rec:
-                    slug_to_rec[slug] = rec
-            slugs = list(slug_to_rec.keys())
-            logger.info(
-                "4th pass: probing %d Lolpros profiles by slug guess (concurrency=8)",
-                len(slugs),
-            )
-            t0 = time.time()
-            profiles = _asyncio.run(fetch_lolpros_profiles_bulk(slugs, concurrency=8))
-            logger.info(
-                "4th pass: got %d/%d Lolpros profiles in %.1fs",
-                len(profiles), len(slugs), time.time() - t0,
-            )
+                slug_to_rec: dict[str, dict] = {}
+                for rec in pros:
+                    slug = lolpros_slug_guess(rec.get("Player"))
+                    if slug and slug not in slug_to_rec:
+                        slug_to_rec[slug] = rec
+                slugs = list(slug_to_rec.keys())
+                logger.info(
+                    "4th pass: probing %d Lolpros profiles (concurrency=8)",
+                    len(slugs),
+                )
+                t0 = time.time()
+                profiles = _asyncio.run(fetch_lolpros_profiles_bulk(slugs, concurrency=8))
+                logger.info(
+                    "4th pass: got %d/%d Lolpros profiles in %.1fs",
+                    len(profiles), len(slugs), time.time() - t0,
+                )
 
-            n_with_acc = 0
-            n_filled_ids = 0
-            for slug, profile in profiles.items():
-                rec = slug_to_rec.get(slug)
-                if not rec:
-                    continue
-                # Stash the puuid → account mapping for sync_players_with_lookup
-                rec["_lolpros_profile"] = profile
-                rec["_lolpros_puuids"] = [
-                    p for p, _ in extract_puuids_from_profile(profile)
-                ]
-                if rec["_lolpros_puuids"]:
-                    n_with_acc += 1
-                # When wikitext didn't give us SoloqueueIds, fall back to
-                # the Lolpros best-ranked account's IGN.
-                if not rec.get("SoloqueueIds"):
-                    best = best_account_in_profile(profile)
-                    if best and best.get("summoner_name"):
-                        rec["SoloqueueIds"] = best["summoner_name"]
-                        rec["_soloqueue_candidates"] = [best["summoner_name"].split("#")[0]]
-                        n_filled_ids += 1
-            logger.info(
-                "4th pass: +%d Lolpros-cross-referenced pros (puuid match), +%d SoloqueueIds backfilled",
-                n_with_acc, n_filled_ids,
-            )
-            used_path = "wikitext+cargo_export+emea_bulk+lolpros_profiles"
-        except Exception as exc:
-            logger.warning("4th pass (Lolpros profiles) skipped (%s)", exc)
+                n_with_acc = 0
+                n_filled_ids = 0
+                for slug, profile in profiles.items():
+                    rec = slug_to_rec.get(slug)
+                    if not rec:
+                        continue
+                    rec["_lolpros_profile"] = profile
+                    rec["_lolpros_puuids"] = [
+                        p for p, _ in extract_puuids_from_profile(profile)
+                    ]
+                    if rec["_lolpros_puuids"]:
+                        n_with_acc += 1
+                    # When wikitext didn't give us SoloqueueIds, fall back
+                    # to the Lolpros best-ranked account's IGN (per user
+                    # request: "tu prend celui de leur LolPros avec le
+                    # meilleur Rank").
+                    if not rec.get("SoloqueueIds"):
+                        best = best_account_in_profile(profile)
+                        if best and best.get("summoner_name"):
+                            rec["SoloqueueIds"] = best["summoner_name"]
+                            rec["_soloqueue_candidates"] = [best["summoner_name"].split("#")[0]]
+                            n_filled_ids += 1
+                logger.info(
+                    "4th pass: +%d puuid-matched, +%d SoloqueueIds backfilled",
+                    n_with_acc, n_filled_ids,
+                )
+                used_path = "wikitext+cargo_export+emea_bulk+lolpros_profiles"
+            except Exception as exc:
+                logger.warning("4th pass (Lolpros profiles) skipped (%s)", exc)
     else:
         logger.info("Leaguepedia: no Lolpros-matched names — bulk Cargo fetch")
         try:

@@ -617,11 +617,14 @@ def tournament_match_detail(match_id: str, db: Session = Depends(get_db)):
 
     # Batch-resolve cached lolesports_id cross-links for ALL participants
     # in one SQL hit (was 10 separate queries — one per participant).
+    # NB: bind to a non-`m` variable — `m` already refers to the
+    # OfficialMatch loaded at the top of this function and is read again
+    # in the response payload below.
     _pro_player_ids = [p.pro_player_id for p in parts if p.pro_player_id]
     _lolesports_id_to_puuid: dict[str, str] = {}
     if _pro_player_ids:
-        for m in db.query(PlayerMeta).filter(PlayerMeta.lolesports_id.in_(_pro_player_ids)).all():
-            _lolesports_id_to_puuid[m.lolesports_id] = m.puuid
+        for _meta in db.query(PlayerMeta).filter(PlayerMeta.lolesports_id.in_(_pro_player_ids)).all():
+            _lolesports_id_to_puuid[_meta.lolesports_id] = _meta.puuid
 
     def _format_participant(p: OfficialMatchParticipant) -> dict:
         # Resolve riot_puuid via 5 progressively looser strategies.

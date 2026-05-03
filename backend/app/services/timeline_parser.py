@@ -4,8 +4,6 @@ Parse Riot match timeline (frame-by-frame) to extract advanced metrics:
 - Solo kills (kill where assistingParticipantIds is empty AND only 1 other on map nearby)
 - Early deaths (before 14:00)
 """
-from typing import Any
-
 
 ROLE_MAP = {
     "TOP": "TOP",

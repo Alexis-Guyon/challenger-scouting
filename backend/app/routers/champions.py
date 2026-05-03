@@ -13,13 +13,13 @@ of just "top 10 ADCs in general".
 """
 from collections import defaultdict
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import desc, func
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from ..auth import get_current_user
 from ..db import get_db
-from ..models import ChampionPool, Player, PlayerAggregate, PlayerMeta, RankSnapshot
+from ..models import ChampionPool, Player, PlayerMeta, RankSnapshot
 
 router = APIRouter(prefix="/champions", tags=["champions"], dependencies=[Depends(get_current_user)])
 

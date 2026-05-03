@@ -12,12 +12,10 @@ Used by:
 """
 import logging
 from collections import defaultdict
-from datetime import datetime, timezone
 
-from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-from ..models import CSSSnapshot, Player, PlayerAggregate
+from ..models import CSSSnapshot, PlayerAggregate
 
 logger = logging.getLogger(__name__)
 

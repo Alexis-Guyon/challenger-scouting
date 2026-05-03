@@ -178,8 +178,6 @@ async def ingest_player_matches(client: RiotClient, db: Session, puuid: str, cou
             team_dmg[pp["team_id"]] = team_dmg.get(pp["team_id"], 0) + pp["damage_to_champs"]
             team_kills[pp["team_id"]] = team_kills.get(pp["team_id"], 0) + pp["kills"]
 
-        duration_min = max(info.get("gameDuration", 1) / 60.0, 1.0)
-
         for pp in parsed:
             tdmg = team_dmg.get(pp["team_id"], 1) or 1
             tkills = team_kills.get(pp["team_id"], 0)

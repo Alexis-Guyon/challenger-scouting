@@ -2,7 +2,6 @@
 Tournament stats endpoints + LEC roster comparison.
 """
 import json as _json
-import re
 import time
 from collections import defaultdict
 from statistics import mean
@@ -24,8 +23,6 @@ from ..models import (
     Tournament,
     User,
 )
-from ..services.scoring import compute_css_for_aggregate
-
 router = APIRouter(tags=["tournaments"], dependencies=[Depends(get_current_user)])
 
 # --- separate sub-router for /tournament-matches/* ---
@@ -124,44 +121,7 @@ ROLE_MAP_TO_LOLESPORTS = {
 ROLE_MAP_FROM_LOLESPORTS = {v: k for k, v in ROLE_MAP_TO_LOLESPORTS.items()}
 
 
-def _normalize_for_match(s: str | None) -> str:
-    if not s:
-        return ""
-    s = s.split("#")[0]
-    return re.sub(r"[^a-z0-9]", "", s.lower())
-
-
-def _candidates_for_match(s: str | None) -> list[str]:
-    """Multiple normalized forms — same logic as Leaguepedia matcher (strip team prefix + suffix)."""
-    if not s:
-        return []
-    base = s.split("#")[0].strip()
-    out: list[str] = []
-    seen: set[str] = set()
-
-    def push(x: str):
-        n = re.sub(r"[^a-z0-9]", "", x.lower())
-        if n and n not in seen:
-            seen.add(n)
-            out.append(n)
-
-    push(base)
-    push(re.sub(r"^(twtv|trainer|coach|sub)\s+", "", base, flags=re.I).strip())
-    m = re.match(r"^([A-Z0-9]{1,5})\s+(.+)$", base)
-    if m:
-        push(m.group(2))
-        push(m.group(2).split(" ")[-1])
-    no_suffix = re.sub(r"\s+(NEXT|academy|smurf|alt|main|\d+)$", "", base, flags=re.I).strip()
-    if no_suffix != base:
-        push(no_suffix)
-    if m:
-        cleaned = re.sub(r"\s+(NEXT|academy|smurf|alt|main|\d+)$", "", m.group(2), flags=re.I).strip()
-        push(cleaned)
-        push(cleaned.split(" ")[-1])
-    parts = base.split(" ")
-    if len(parts) > 1:
-        push(parts[-1])
-    return out
+from ..services.name_matching import name_candidates as _candidates_for_match  # noqa: F401
 
 
 def _resolve_pro_player_id(db: Session, player: Player, meta: PlayerMeta | None) -> str | None:
@@ -464,14 +424,12 @@ def _summarize_pro_player(
         matches = {m.id: m for m in db.query(OfficialMatch).filter(OfficialMatch.id.in_(match_ids)).all()}
     tournament_stats = _aggregate_tournament_stats(parts, matches) if parts else {"games": 0}
 
-    # ---- Resolve riot_puuid via 3 strategies ----
+    # ---- Resolve riot_puuid via 4 strategies ----
     riot_puuid = None
-    matched_meta: PlayerMeta | None = None
 
     # 1. Direct cross-link
     meta = db.query(PlayerMeta).filter_by(lolesports_id=pro_player_id).first()
     if meta:
-        matched_meta = meta
         riot_puuid = meta.puuid
 
     # Build candidates from the Lolesports player_name hint (e.g. "Empyros")
@@ -491,7 +449,6 @@ def _summarize_pro_player(
         for cand in cand_set:
             m = lolpros_name_index.get(cand)
             if m:
-                matched_meta = m
                 riot_puuid = m.puuid
                 if not m.lolesports_id:
                     m.lolesports_id = pro_player_id
@@ -512,7 +469,6 @@ def _summarize_pro_player(
                 if not m.lolesports_id:
                     m.lolesports_id = pro_player_id
                     db.commit()
-                matched_meta = m
                 riot_puuid = p.puuid
                 break
 
@@ -533,7 +489,6 @@ def _summarize_pro_player(
                 if not m.lolesports_id:
                     m.lolesports_id = pro_player_id
                     db.commit()
-                matched_meta = m
                 riot_puuid = p.puuid
                 break
 
@@ -784,27 +739,12 @@ async def tournament_match_timeline(match_id: str, db: Session = Depends(get_db)
     # Walk windows from broadcast start (+ ~3 min draft buffer) every 10 s of
     # game data — but the API returns 100 s of data per call, so step 100 s.
     step_sec = 100
-    parts_meta = (
-        db.query(OfficialMatchParticipant)
-        .filter_by(match_id=match_id)
-        .all()
-    )
-    pid_to_info = {}
-    for p in parts_meta:
-        # In lolesports gameMetadata, participantIds are 1..10 (blue 1-5, red 6-10).
-        # We don't store the participantId directly on OMP, but we can rebuild
-        # it from the order + side at ingestion time. Fallback: match by name.
-        pass  # we'll use summoner_name → key matching
-
-    series: dict[str, list[tuple[int, int]]] = {}  # name -> [(t_sec, gold)]
     blue_total: list[tuple[int, int]] = []
     red_total: list[tuple[int, int]] = []
 
     async with LolesportsClient() as client:
         cur = bc_start + _td(minutes=3)  # draft+load buffer
         end = bc_start + _td(seconds=duration + 60)
-        last_blue_total = 0
-        last_red_total = 0
         while cur <= end:
             iso = round_to_10s_iso(cur)
             try:
@@ -821,11 +761,8 @@ async def tournament_match_timeline(match_id: str, db: Session = Depends(get_db)
                 t_sec = int((ts - bc_start).total_seconds()) if ts else 0
                 blue = (frame.get("blueTeam") or {}).get("participants", []) or []
                 red  = (frame.get("redTeam")  or {}).get("participants", []) or []
-                blue_sum = sum(p.get("totalGold", 0) for p in blue)
-                red_sum  = sum(p.get("totalGold", 0) for p in red)
-                blue_total.append((t_sec, blue_sum))
-                red_total.append((t_sec, red_sum))
-                last_blue_total, last_red_total = blue_sum, red_sum
+                blue_total.append((t_sec, sum(p.get("totalGold", 0) for p in blue)))
+                red_total.append((t_sec, sum(p.get("totalGold", 0) for p in red)))
             cur += _td(seconds=step_sec)
 
     # Dedupe by t_sec (multiple windows overlap), pick the latest per t

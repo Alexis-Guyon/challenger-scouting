@@ -10,10 +10,8 @@ it from Riot on demand and parses out:
 A small in-memory cache keeps recently-viewed matches warm so navigating back
 and forth doesn't re-fetch.
 """
-import asyncio
 import json
 import time
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
@@ -21,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from ..auth import get_current_user
 from ..db import get_db
-from ..models import MatchParticipant, Match
+from ..models import Match
 from ..services.riot_client import RiotClient
 
 router = APIRouter(prefix="/matches", tags=["matches"], dependencies=[Depends(get_current_user)])

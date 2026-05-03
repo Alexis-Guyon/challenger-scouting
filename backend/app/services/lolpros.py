@@ -49,43 +49,7 @@ POSITION_TO_ROLE = {
 }
 
 
-def _normalize(s: str) -> str:
-    if not s:
-        return ""
-    s = s.split("#")[0]
-    return re.sub(r"[^a-z0-9]", "", s.lower())
-
-
-def _candidates(s: str) -> list[str]:
-    """Same multi-strategy normalization as the Leaguepedia matcher."""
-    if not s:
-        return []
-    base = s.split("#")[0].strip()
-    out, seen = [], set()
-
-    def push(x: str):
-        n = re.sub(r"[^a-z0-9]", "", x.lower())
-        if n and n not in seen:
-            seen.add(n)
-            out.append(n)
-
-    push(base)
-    push(re.sub(r"^(twtv|trainer|coach|sub)\s+", "", base, flags=re.I).strip())
-    m = re.match(r"^([A-Z0-9]{1,5})\s+(.+)$", base)
-    if m:
-        push(m.group(2))
-        push(m.group(2).split(" ")[-1])
-    no_suffix = re.sub(r"\s+(NEXT|academy|smurf|alt|main|\d+)$", "", base, flags=re.I).strip()
-    if no_suffix != base:
-        push(no_suffix)
-    if m:
-        cleaned = re.sub(r"\s+(NEXT|academy|smurf|alt|main|\d+)$", "", m.group(2), flags=re.I).strip()
-        push(cleaned)
-        push(cleaned.split(" ")[-1])
-    parts = base.split(" ")
-    if len(parts) > 1:
-        push(parts[-1])
-    return out
+from .name_matching import name_candidates as _candidates  # noqa: F401
 
 
 def fetch_ladder(server: str = "EUW", max_pages: int = 200) -> list[dict]:

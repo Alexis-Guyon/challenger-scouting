@@ -672,7 +672,6 @@ def fetch_pros_combined(
     """
     if not names:
         return []
-    import httpx
 
     cargo_rows = fetch_pros_via_cargo(names, site=site)
     records = [_cargo_to_record(t) for t in cargo_rows.values()]
@@ -1552,7 +1551,6 @@ def sync_players_with_lookup(db: Session, lookup: dict[str, dict]) -> dict:
 
 def run_leaguepedia_sync_sync(
     db: Session,
-    prefer_wikitext: bool = True,
     with_lolpros_bulk: bool = False,
 ) -> dict:
     """

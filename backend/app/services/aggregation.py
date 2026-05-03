@@ -6,7 +6,6 @@ import logging
 from collections import defaultdict
 from statistics import mean, pstdev
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -55,11 +54,11 @@ def aggregate_player(db: Session, puuid: str, patch: str | None = None,
     if patch:
         q = q.filter(Match.patch == patch)
     elif current_patch_only:
-        from sqlalchemy import func
+        from sqlalchemy import func as _func
         latest_patch = (
-            db.query(Match.patch, func.count(Match.match_id).label("n"))
+            db.query(Match.patch, _func.count(Match.match_id).label("n"))
             .group_by(Match.patch)
-            .order_by(func.count(Match.match_id).desc())
+            .order_by(_func.count(Match.match_id).desc())
             .first()
         )
         if latest_patch:

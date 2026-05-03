@@ -32,7 +32,6 @@ import logging
 import math
 import random
 from collections import defaultdict
-from datetime import datetime, timezone
 
 from sqlalchemy import desc
 from sqlalchemy.orm import Session

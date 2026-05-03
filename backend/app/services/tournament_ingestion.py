@@ -91,25 +91,16 @@ def _normalize_role(s: str | None) -> str:
 
 
 def _build_window_at_15min(window_data: dict) -> dict[int, dict]:
-    """Pick the frame closest to 15:00 game time, return participant snapshots keyed by participantId."""
+    """Pick the frame closest to 15:00 game time, return participant snapshots keyed by participantId.
+
+    Frames come at fixed 10s intervals from gameStart, so frames[90] is the
+    15:00 mark. For games shorter than 15min (rare; surrender@15) we fall
+    back to the last frame.
+    """
     frames = window_data.get("frames", []) if window_data else []
     if not frames:
         return {}
-    target_sec = 15 * 60
-    chosen = frames[-1]  # fallback to last frame if game ended early
-    best_diff = float("inf")
-    for f in frames:
-        rfc = f.get("rfc460Timestamp")
-        # Use frame index (10s steps) since rfc time is wall-clock
-        # The frames feed has gameStateAge or we just count: each frame is 10s apart
-        pass
-    # Simpler: window frames come at fixed 10s intervals from gameStart
-    # frames[i] = state at 10*i seconds. Index 90 = 15:00.
-    if len(frames) > 90:
-        chosen = frames[90]
-    elif len(frames) > 0:
-        # game shorter than 15min: use last frame (rare, surrender@15)
-        chosen = frames[-1]
+    chosen = frames[90] if len(frames) > 90 else frames[-1]
 
     out: dict[int, dict] = {}
     for side_key in ("blueTeam", "redTeam"):
@@ -343,7 +334,6 @@ async def _ingest_one_game(client: LolesportsClient, db: Session,
             player_name = summoner_name or (esports_player_id or "?")
 
             last_frame = last["by_pid"].get(pid, {})
-            d = details_pid.get(pid, {})
 
             kills = last_frame.get("kills", 0)
             deaths = last_frame.get("deaths", 0)
@@ -524,17 +514,15 @@ async def ingest_league(client: LolesportsClient, db: Session, league: dict, max
         if m.red_team_id:
             seen_team_ids.add(m.red_team_id)
 
-    # Reconstruct team display info from any participant match we processed
-    code_by_id: dict[str, str] = {}
-    for ev in events:
-        teams = ((ev.get("match") or {}).get("teams") or [])
-        # We don't have IDs from schedule, so we rely on the match.code field
-        # to seed name/code; only set if we have a matching id later.
+    # Reconstruct team display info from any participant match we processed.
+    # We don't have IDs from schedule, so we key by match.code as a proxy
+    # and only apply if we get a match later.
+    code_by_id: dict[str, dict] = {}
     for ev in events:
         for t in ((ev.get("match") or {}).get("teams") or []):
             code = t.get("code")
             if code:
-                code_by_id[code] = t  # keyed by code as proxy
+                code_by_id[code] = t
 
     for tid in seen_team_ids:
         pt = db.get(ProTeam, tid)

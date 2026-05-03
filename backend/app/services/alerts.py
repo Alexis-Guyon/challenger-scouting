@@ -17,7 +17,6 @@ fresh snapshot at the END of every alerts check.
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Optional
 
 import httpx
 from sqlalchemy import desc

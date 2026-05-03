@@ -1266,18 +1266,33 @@ def sync_players_with_lookup(db: Session, lookup: dict[str, dict]) -> dict:
         if processed % 200 == 0:
             db.commit()
 
-        rec = None
-
-        for candidate in _candidate_normalizations(p.summoner_name or ""):
-            if candidate in lookup:
-                rec = lookup[candidate]
-                break
-
         meta = db.get(PlayerMeta, p.puuid)
 
         if not meta:
             meta = PlayerMeta(puuid=p.puuid)
             db.add(meta)
+
+        rec = None
+
+        # Priority 1: if Lolpros already mapped this Riot ID to a Leaguepedia
+        # canonical name (meta.leaguepedia_id), look it up directly. Razørk's
+        # Riot summoner name "Razørk Activoo#razzz" doesn't normalize cleanly
+        # to "Razork" via _candidate_normalizations (the ø is stripped, not
+        # mapped to o), but Lolpros has already stored leaguepedia_id="Razork"
+        # when it matched him — using that here recovers ~50 ages immediately.
+        if meta.leaguepedia_id:
+            for cand in _candidate_normalizations(meta.leaguepedia_id):
+                if cand in lookup:
+                    rec = lookup[cand]
+                    break
+
+        # Priority 2: fall back to summoner-name-based candidates (catches
+        # Riot accounts that Lolpros doesn't know about, e.g. brand-new pros)
+        if not rec:
+            for candidate in _candidate_normalizations(p.summoner_name or ""):
+                if candidate in lookup:
+                    rec = lookup[candidate]
+                    break
 
         if rec:
             matched += 1

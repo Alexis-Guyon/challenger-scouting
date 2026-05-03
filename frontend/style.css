@@ -864,11 +864,28 @@ body:has(.match-modal.open) { overflow: hidden; }
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  max-width: min(1400px, 95vw);
+  max-width: min(1600px, 96vw);
   width: 100%;
   box-shadow: var(--shadow-lg);
   animation: slideUp 0.2s var(--ease);
 }
+/* Compact tables inside the match modal — 9 columns per team table is
+   tight even at 1600px wide. Smaller font + tighter padding + strict
+   layout keeps everything on one row, no horizontal scroll. */
+.match-modal-card table {
+  font-size: 12px;
+  table-layout: fixed;
+  width: 100%;
+}
+.match-modal-card th,
+.match-modal-card td {
+  padding: 6px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Player-name column gets the spare width; everything else stays compact */
+.match-modal-card td:nth-child(2) { white-space: normal; }
 .match-modal-head {
   display: flex;
   justify-content: space-between;

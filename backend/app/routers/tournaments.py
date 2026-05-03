@@ -1,7 +1,9 @@
 """
 Tournament stats endpoints + LEC roster comparison.
 """
+import json as _json
 import re
+import time
 from collections import defaultdict
 from statistics import mean
 
@@ -28,6 +30,87 @@ router = APIRouter(tags=["tournaments"], dependencies=[Depends(get_current_user)
 
 # --- separate sub-router for /tournament-matches/* ---
 match_router = APIRouter(prefix="/tournament-matches", tags=["tournaments"], dependencies=[Depends(get_current_user)])
+
+
+# ---------------------------------------------------------------
+# Module-level resolution-index cache.
+#
+# These indexes are expensive to build (31k Player rows + 1.3k JSON-parsed
+# Lolpros profiles + name normalization), but they only change when the
+# Leaguepedia/Lolpros sync runs. Cache them in process for 5 min — covers
+# bursts of modal opens (the user clicking through several matches in a
+# row) without making the page lag every click.
+# ---------------------------------------------------------------
+_RESOLUTION_CACHE_TTL_SEC = 5 * 60
+_resolution_cache: dict | None = None
+_resolution_cache_at: float = 0.0
+
+
+def _build_resolution_indexes(db: Session) -> dict:
+    """Return {lolpros_name_index, summoner_name_index, pro_puuid_set,
+    omp_candidate_index}."""
+    lolpros_name_index: dict[str, PlayerMeta] = {}
+    metas_with_profile = db.query(PlayerMeta).filter(
+        PlayerMeta.lolpros_profile_json.isnot(None)
+    ).all()
+    for m in metas_with_profile:
+        try:
+            profile = _json.loads(m.lolpros_profile_json)
+        except Exception:
+            continue
+        for cand in _candidates_for_match(profile.get("name") or ""):
+            lolpros_name_index.setdefault(cand, m)
+
+    summoner_name_index: dict[str, list] = {}
+    for p in db.query(Player).all():
+        for cand in _candidates_for_match(p.summoner_name or ""):
+            summoner_name_index.setdefault(cand, []).append(p)
+
+    pro_puuid_set: set[str] = {
+        m.puuid for m in db.query(PlayerMeta).filter(PlayerMeta.is_pro == True).all()  # noqa: E712
+    }
+
+    # OMP candidate index: normalized name → pro_player_id. Used by
+    # _resolve_pro_player_id so we don't iterate 34k rows per request.
+    omp_candidate_index: dict[str, str] = {}
+    omp_rows = (
+        db.query(OfficialMatchParticipant.pro_player_id,
+                 OfficialMatchParticipant.summoner_name,
+                 OfficialMatchParticipant.player_name)
+        .filter((OfficialMatchParticipant.summoner_name.isnot(None))
+                & (OfficialMatchParticipant.summoner_name != ""))
+        .all()
+    )
+    for ppid, sname, pname in omp_rows:
+        if not ppid:
+            continue
+        for cand in _candidates_for_match(sname or ""):
+            omp_candidate_index.setdefault(cand, ppid)
+        for cand in _candidates_for_match(pname or ""):
+            omp_candidate_index.setdefault(cand, ppid)
+
+    return {
+        "lolpros_name_index": lolpros_name_index,
+        "summoner_name_index": summoner_name_index,
+        "pro_puuid_set": pro_puuid_set,
+        "omp_candidate_index": omp_candidate_index,
+    }
+
+
+def _get_resolution_indexes(db: Session) -> dict:
+    global _resolution_cache, _resolution_cache_at
+    now = time.time()
+    if _resolution_cache is None or (now - _resolution_cache_at) > _RESOLUTION_CACHE_TTL_SEC:
+        _resolution_cache = _build_resolution_indexes(db)
+        _resolution_cache_at = now
+    return _resolution_cache
+
+
+def invalidate_resolution_cache() -> None:
+    """Call after any sync that modifies PlayerMeta / Player rows."""
+    global _resolution_cache, _resolution_cache_at
+    _resolution_cache = None
+    _resolution_cache_at = 0.0
 
 
 # Cross-mapping from LP/Riot role to lolesports role
@@ -121,25 +204,15 @@ def _resolve_pro_player_id(db: Session, player: Player, meta: PlayerMeta | None)
     if not cand_set:
         return None
 
-    rows = (
-        db.query(OfficialMatchParticipant)
-        .filter(
-            (OfficialMatchParticipant.summoner_name.isnot(None))
-            & (OfficialMatchParticipant.summoner_name != "")
-        )
-        .all()
-    )
-    for c in rows:
-        # Generate candidates on the tournament side too so "KC Caliste" -> "caliste"
-        # matches the player's "Caliste" Lolpros alias.
-        c_cands: set[str] = set()
-        c_cands.update(_candidates_for_match(c.summoner_name or ""))
-        c_cands.update(_candidates_for_match(c.player_name or ""))
-        if cand_set & c_cands:
+    # Cached normalized-name → pro_player_id lookup (was 34k-row scan).
+    omp_index = _get_resolution_indexes(db)["omp_candidate_index"]
+    for cand in cand_set:
+        ppid = omp_index.get(cand)
+        if ppid:
             if meta:
-                meta.lolesports_id = c.pro_player_id
+                meta.lolesports_id = ppid
                 db.commit()
-            return c.pro_player_id
+            return ppid
     return None
 
 
@@ -307,32 +380,12 @@ def roster_compare(
 
     teams = {t.id: t for t in db.query(ProTeam).filter(ProTeam.id.in_([r.team_id for r in roster])).all()}
 
-    # Pre-build name → PlayerMeta indexes once for the roster scan, so
-    # _summarize_pro_player can fall back to multi-strategy puuid resolution
-    # without doing a full table scan per row.
-    import json as _json
-    _all_metas_with_profile = db.query(PlayerMeta).filter(
-        PlayerMeta.lolpros_profile_json.isnot(None)
-    ).all()
-    _lolpros_name_index: dict[str, PlayerMeta] = {}
-    for _m in _all_metas_with_profile:
-        try:
-            _profile = _json.loads(_m.lolpros_profile_json)
-        except Exception:
-            continue
-        for cand in _candidates_for_match(_profile.get("name") or ""):
-            _lolpros_name_index.setdefault(cand, _m)
-
-    _all_players = db.query(Player).all()
-    _summoner_name_index: dict[str, list] = {}
-    for _p in _all_players:
-        for cand in _candidates_for_match(_p.summoner_name or ""):
-            _summoner_name_index.setdefault(cand, []).append(_p)
-
-    # Pros set, used to break ties when summoner_name has multiple hits.
-    _pro_puuid_set: set[str] = {
-        m.puuid for m in db.query(PlayerMeta).filter(PlayerMeta.is_pro == True).all()  # noqa: E712
-    }
+    # Pre-built name → PlayerMeta / Player indexes (cached 5 min in module
+    # scope to avoid 30k+ rows of normalization on every roster-compare hit).
+    _idx = _get_resolution_indexes(db)
+    _lolpros_name_index = _idx["lolpros_name_index"]
+    _summoner_name_index = _idx["summoner_name_index"]
+    _pro_puuid_set = _idx["pro_puuid_set"]
 
     pro_entries = []
     for r in roster:
@@ -554,37 +607,21 @@ def tournament_match_detail(match_id: str, db: Session = Depends(get_db)):
             "cs_at_15": sum(p.cs_at_15 for p in side_parts),
         }
 
-    # Pre-load all PlayerMetas with lolpros_profile_json once.
-    import json as _json
-    _all_metas_with_profile = db.query(PlayerMeta).filter(
-        PlayerMeta.lolpros_profile_json.isnot(None)
-    ).all()
-    # Build {normalized_lolpros_name: meta} index for fast match.
-    _lolpros_name_index: dict[str, PlayerMeta] = {}
-    for _m in _all_metas_with_profile:
-        try:
-            _profile = _json.loads(_m.lolpros_profile_json)
-        except Exception:
-            continue
-        for cand in _candidates_for_match(_profile.get("name") or ""):
-            _lolpros_name_index.setdefault(cand, _m)
+    # Pre-built indexes (cached 5 min in module scope). The cache is
+    # invalidated by the Leaguepedia/Lolpros/tournament-ingestion endpoints
+    # via invalidate_resolution_cache().
+    _idx = _get_resolution_indexes(db)
+    _lolpros_name_index = _idx["lolpros_name_index"]
+    _summoner_name_index = _idx["summoner_name_index"]
+    _pro_puuid_set = _idx["pro_puuid_set"]
 
-    # Build {normalized_riot_summoner: Player} index across the WHOLE DB
-    # (not just is_pro) so we catch ladder-ingested pros that haven't
-    # been Lolpros/Leaguepedia-tagged yet.
-    from ..models import Player as _Player
-    _all_players = db.query(_Player).all()
-    _summoner_name_index: dict[str, list] = {}
-    for _p in _all_players:
-        for cand in _candidates_for_match(_p.summoner_name or ""):
-            _summoner_name_index.setdefault(cand, []).append(_p)
-
-    # Set of puuids tagged as pros (via Leaguepedia/Lolpros sync). Used to
-    # disambiguate short common names (e.g. "Way") that collide with many
-    # ladder accounts — if exactly ONE of the hits is a tagged pro, accept it.
-    _pro_puuid_set: set[str] = {
-        m.puuid for m in db.query(PlayerMeta).filter(PlayerMeta.is_pro == True).all()  # noqa: E712
-    }
+    # Batch-resolve cached lolesports_id cross-links for ALL participants
+    # in one SQL hit (was 10 separate queries — one per participant).
+    _pro_player_ids = [p.pro_player_id for p in parts if p.pro_player_id]
+    _lolesports_id_to_puuid: dict[str, str] = {}
+    if _pro_player_ids:
+        for m in db.query(PlayerMeta).filter(PlayerMeta.lolesports_id.in_(_pro_player_ids)).all():
+            _lolesports_id_to_puuid[m.lolesports_id] = m.puuid
 
     def _format_participant(p: OfficialMatchParticipant) -> dict:
         # Resolve riot_puuid via 5 progressively looser strategies.
@@ -592,9 +629,7 @@ def tournament_match_detail(match_id: str, db: Session = Depends(get_db)):
 
         # 1. Direct cross-link: PlayerMeta.lolesports_id (set on prior pass).
         if p.pro_player_id:
-            meta = db.query(PlayerMeta).filter_by(lolesports_id=p.pro_player_id).first()
-            if meta:
-                riot_puuid = meta.puuid
+            riot_puuid = _lolesports_id_to_puuid.get(p.pro_player_id)
 
         # Build candidate normalizations from BOTH the player_name (e.g.
         # "FNC Razork") AND the in-game summoner_name (e.g. "FNC Razork#xyz").

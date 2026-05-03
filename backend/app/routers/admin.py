@@ -299,6 +299,7 @@ def system_stats(db: Session = Depends(get_db)):
 
 
 def _sync_leaguepedia_job(job_id: str, with_lolpros_bulk: bool = False):
+    from .tournaments import invalidate_resolution_cache
     update_job(job_id, status="running", step="fetching")
     try:
         db = SessionLocal()
@@ -306,6 +307,7 @@ def _sync_leaguepedia_job(job_id: str, with_lolpros_bulk: bool = False):
             stats = run_leaguepedia_sync_sync(db, with_lolpros_bulk=with_lolpros_bulk)
         finally:
             db.close()
+        invalidate_resolution_cache()
         update_job(job_id, status="done", step="done", extras_merge={"stats": stats})
     except Exception as exc:
         logger.exception("leaguepedia sync failed")
@@ -313,9 +315,11 @@ def _sync_leaguepedia_job(job_id: str, with_lolpros_bulk: bool = False):
 
 
 def _sync_tournaments_job(job_id: str, league_slugs: list[str], max_events: int):
+    from .tournaments import invalidate_resolution_cache
     update_job(job_id, status="running", step="fetching")
     try:
         stats = run_tournament_sync_sync(league_slugs=league_slugs, max_events_per_league=max_events)
+        invalidate_resolution_cache()
         update_job(job_id, status="done", step="done", extras_merge={"stats": stats})
     except Exception as exc:
         logger.exception("tournament sync failed")
@@ -336,6 +340,7 @@ def sync_tournaments(
 
 
 def _sync_lolpros_job(job_id: str, server: str):
+    from .tournaments import invalidate_resolution_cache
     update_job(job_id, status="running", step="fetching")
     try:
         db = SessionLocal()
@@ -343,6 +348,7 @@ def _sync_lolpros_job(job_id: str, server: str):
             stats = run_lolpros_sync_sync(db, server=server)
         finally:
             db.close()
+        invalidate_resolution_cache()
         update_job(job_id, status="done", step="done", extras_merge={"stats": stats})
     except Exception as exc:
         logger.exception("lolpros sync failed")

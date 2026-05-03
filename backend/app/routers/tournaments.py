@@ -329,6 +329,11 @@ def roster_compare(
         for cand in _candidates_for_match(_p.summoner_name or ""):
             _summoner_name_index.setdefault(cand, []).append(_p)
 
+    # Pros set, used to break ties when summoner_name has multiple hits.
+    _pro_puuid_set: set[str] = {
+        m.puuid for m in db.query(PlayerMeta).filter(PlayerMeta.is_pro == True).all()  # noqa: E712
+    }
+
     pro_entries = []
     for r in roster:
         pro_data = _summarize_pro_player(
@@ -336,6 +341,7 @@ def roster_compare(
             player_name_hint=r.player_name,
             lolpros_name_index=_lolpros_name_index,
             summoner_name_index=_summoner_name_index,
+            pro_puuid_set=_pro_puuid_set,
         )
         pro_data["team_code"] = teams[r.team_id].code if r.team_id in teams else ""
         pro_data["team_name"] = teams[r.team_id].name if r.team_id in teams else ""
@@ -384,6 +390,7 @@ def _summarize_pro_player(
     player_name_hint: str | None = None,
     lolpros_name_index: dict | None = None,
     summoner_name_index: dict | None = None,
+    pro_puuid_set: set | None = None,
 ) -> dict:
     """Build a side-by-side-ready summary for a pro: tournament stats + (when
     matched) SoloQ stats.
@@ -445,6 +452,27 @@ def _summarize_pro_player(
             if len(hits) == 1:
                 p = hits[0]
                 # Persist the cross-link on this player's PlayerMeta
+                m = db.get(PlayerMeta, p.puuid)
+                if not m:
+                    m = PlayerMeta(puuid=p.puuid)
+                    db.add(m)
+                if not m.lolesports_id:
+                    m.lolesports_id = pro_player_id
+                    db.commit()
+                matched_meta = m
+                riot_puuid = p.puuid
+                break
+
+    # 4. Multi-hit summoner_name → restrict to is_pro=True. Disambiguates
+    #    short pro IGNs (e.g. "Way") that collide with many ladder accounts.
+    if not riot_puuid and summoner_name_index and pro_puuid_set:
+        for cand in cand_set:
+            hits = summoner_name_index.get(cand) or []
+            if len(hits) <= 1:
+                continue
+            pro_hits = [h for h in hits if h.puuid in pro_puuid_set]
+            if len(pro_hits) == 1:
+                p = pro_hits[0]
                 m = db.get(PlayerMeta, p.puuid)
                 if not m:
                     m = PlayerMeta(puuid=p.puuid)
@@ -551,8 +579,15 @@ def tournament_match_detail(match_id: str, db: Session = Depends(get_db)):
         for cand in _candidates_for_match(_p.summoner_name or ""):
             _summoner_name_index.setdefault(cand, []).append(_p)
 
+    # Set of puuids tagged as pros (via Leaguepedia/Lolpros sync). Used to
+    # disambiguate short common names (e.g. "Way") that collide with many
+    # ladder accounts — if exactly ONE of the hits is a tagged pro, accept it.
+    _pro_puuid_set: set[str] = {
+        m.puuid for m in db.query(PlayerMeta).filter(PlayerMeta.is_pro == True).all()  # noqa: E712
+    }
+
     def _format_participant(p: OfficialMatchParticipant) -> dict:
-        # Resolve riot_puuid via 4 progressively looser strategies.
+        # Resolve riot_puuid via 5 progressively looser strategies.
         riot_puuid = None
 
         # 1. Direct cross-link: PlayerMeta.lolesports_id (set on prior pass).
@@ -591,6 +626,26 @@ def tournament_match_detail(match_id: str, db: Session = Depends(get_db)):
                 hits = _summoner_name_index.get(cand) or []
                 if len(hits) == 1:
                     riot_puuid = hits[0].puuid
+                    break
+
+        # 4. Multi-hit summoner_name → restrict to known pros. Catches short
+        #    pro IGNs like "Way" that collide with many ladder accounts but
+        #    where exactly one hit is a tagged pro (is_pro=True via
+        #    Leaguepedia/Lolpros sync). Persist the cross-link so subsequent
+        #    requests hit strategy 1.
+        if not riot_puuid:
+            for cand in cand_set:
+                hits = _summoner_name_index.get(cand) or []
+                if len(hits) <= 1:
+                    continue
+                pro_hits = [h for h in hits if h.puuid in _pro_puuid_set]
+                if len(pro_hits) == 1:
+                    riot_puuid = pro_hits[0].puuid
+                    if p.pro_player_id:
+                        m = db.get(PlayerMeta, riot_puuid)
+                        if m and not m.lolesports_id:
+                            m.lolesports_id = p.pro_player_id
+                            db.commit()
                     break
 
         return {

@@ -307,9 +307,36 @@ def roster_compare(
 
     teams = {t.id: t for t in db.query(ProTeam).filter(ProTeam.id.in_([r.team_id for r in roster])).all()}
 
+    # Pre-build name → PlayerMeta indexes once for the roster scan, so
+    # _summarize_pro_player can fall back to multi-strategy puuid resolution
+    # without doing a full table scan per row.
+    import json as _json
+    _all_metas_with_profile = db.query(PlayerMeta).filter(
+        PlayerMeta.lolpros_profile_json.isnot(None)
+    ).all()
+    _lolpros_name_index: dict[str, PlayerMeta] = {}
+    for _m in _all_metas_with_profile:
+        try:
+            _profile = _json.loads(_m.lolpros_profile_json)
+        except Exception:
+            continue
+        for cand in _candidates_for_match(_profile.get("name") or ""):
+            _lolpros_name_index.setdefault(cand, _m)
+
+    _all_players = db.query(Player).all()
+    _summoner_name_index: dict[str, list] = {}
+    for _p in _all_players:
+        for cand in _candidates_for_match(_p.summoner_name or ""):
+            _summoner_name_index.setdefault(cand, []).append(_p)
+
     pro_entries = []
     for r in roster:
-        pro_data = _summarize_pro_player(db, r.pro_player_id, lolesports_role)
+        pro_data = _summarize_pro_player(
+            db, r.pro_player_id, lolesports_role,
+            player_name_hint=r.player_name,
+            lolpros_name_index=_lolpros_name_index,
+            summoner_name_index=_summoner_name_index,
+        )
         pro_data["team_code"] = teams[r.team_id].code if r.team_id in teams else ""
         pro_data["team_name"] = teams[r.team_id].name if r.team_id in teams else ""
         pro_data["player_name"] = r.player_name
@@ -349,8 +376,23 @@ def _serialize_prospect(p: Player, agg: PlayerAggregate | None, db: Session) -> 
     return out
 
 
-def _summarize_pro_player(db: Session, pro_player_id: str, lolesports_role: str) -> dict:
-    """Build a side-by-side-ready summary for a pro: tournament stats + (when matched) SoloQ stats."""
+def _summarize_pro_player(
+    db: Session,
+    pro_player_id: str,
+    lolesports_role: str,
+    *,
+    player_name_hint: str | None = None,
+    lolpros_name_index: dict | None = None,
+    summoner_name_index: dict | None = None,
+) -> dict:
+    """Build a side-by-side-ready summary for a pro: tournament stats + (when
+    matched) SoloQ stats.
+
+    Riot-puuid resolution uses 3 strategies (same as the tournament-match
+    modal): cached lolesports_id → Lolpros profile name → Riot summoner
+    name. The two indexes are built once by the caller and reused per row
+    so the whole roster scan stays O(N).
+    """
     parts = (
         db.query(OfficialMatchParticipant)
         .filter_by(pro_player_id=pro_player_id, role=lolesports_role)
@@ -362,13 +404,63 @@ def _summarize_pro_player(db: Session, pro_player_id: str, lolesports_role: str)
         matches = {m.id: m for m in db.query(OfficialMatch).filter(OfficialMatch.id.in_(match_ids)).all()}
     tournament_stats = _aggregate_tournament_stats(parts, matches) if parts else {"games": 0}
 
-    # Try to find Riot puuid via PlayerMeta.lolesports_id
+    # ---- Resolve riot_puuid via 3 strategies ----
+    riot_puuid = None
+    matched_meta: PlayerMeta | None = None
+
+    # 1. Direct cross-link
     meta = db.query(PlayerMeta).filter_by(lolesports_id=pro_player_id).first()
-    soloq = None
     if meta:
+        matched_meta = meta
+        riot_puuid = meta.puuid
+
+    # Build candidates from the Lolesports player_name hint (e.g. "Empyros")
+    # AND from any in-game summoner_name in the OfficialMatchParticipant rows
+    # we just queried (catches cases where lolesports stores "FNC Empyros").
+    cand_set: set[str] = set()
+    if player_name_hint:
+        cand_set.update(_candidates_for_match(player_name_hint))
+    for op in parts[:3]:  # only need a couple to seed candidates
+        if op.player_name:
+            cand_set.update(_candidates_for_match(op.player_name))
+        if op.summoner_name:
+            cand_set.update(_candidates_for_match(op.summoner_name))
+
+    # 2. Lolpros profile name match → cache the cross-link for next call
+    if not riot_puuid and lolpros_name_index:
+        for cand in cand_set:
+            m = lolpros_name_index.get(cand)
+            if m:
+                matched_meta = m
+                riot_puuid = m.puuid
+                if not m.lolesports_id:
+                    m.lolesports_id = pro_player_id
+                    db.commit()
+                break
+
+    # 3. Riot summoner_name match (single-hit only, anti-collision)
+    if not riot_puuid and summoner_name_index:
+        for cand in cand_set:
+            hits = summoner_name_index.get(cand) or []
+            if len(hits) == 1:
+                p = hits[0]
+                # Persist the cross-link on this player's PlayerMeta
+                m = db.get(PlayerMeta, p.puuid)
+                if not m:
+                    m = PlayerMeta(puuid=p.puuid)
+                    db.add(m)
+                if not m.lolesports_id:
+                    m.lolesports_id = pro_player_id
+                    db.commit()
+                matched_meta = m
+                riot_puuid = p.puuid
+                break
+
+    soloq = None
+    if riot_puuid:
         agg = (
             db.query(PlayerAggregate)
-            .filter_by(puuid=meta.puuid)
+            .filter_by(puuid=riot_puuid)
             .order_by(desc(PlayerAggregate.games_played))
             .first()
         )
@@ -384,7 +476,7 @@ def _summarize_pro_player(db: Session, pro_player_id: str, lolesports_role: str)
                 "kda": round(agg.avg_kda, 2),
                 "vspm": round(agg.avg_vspm, 2),
             }
-    return {"tournament": tournament_stats, "soloq": soloq}
+    return {"tournament": tournament_stats, "soloq": soloq, "riot_puuid": riot_puuid}
 
 
 # ============================================================

@@ -44,6 +44,14 @@ def _normalize_name(s: str) -> str:
 def _candidate_normalizations(s: str) -> list[str]:
     """
     Return every plausible normalized form of a Riot in-game name.
+
+    DOES NOT push single-word fragments shorter than 5 chars when the
+    original name has multiple words. The previous version pushed the
+    last word as a candidate (e.g. "Hide on Bush" → "bush"), which
+    caused collisions like sOAZ's KR alt "Baguette on bush" matching
+    Faker's "Hide on bush#KR1" via the shared "bush" candidate.
+    Every candidate generated below is the FULL base or a strict
+    transformation (prefix/suffix strip), never an arbitrary fragment.
     """
     if not s:
         return []
@@ -52,51 +60,43 @@ def _candidate_normalizations(s: str) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
 
-    def push(x: str):
+    def push(x: str, strict_min_len: bool = False):
         n = re.sub(r"[^a-z0-9]", "", x.lower())
-        if n and n not in seen:
-            seen.add(n)
-            out.append(n)
+        if not n:
+            return
+        # Reject overly-generic fragments. Three letters or fewer = almost
+        # certain collision risk (bush/king/rat/cap/...). Four letters is
+        # the typical pro-IGN length (Caps, Otto, Hans, Faker→faker is 5,
+        # Lider→lider is 5) — we accept those when they're the FULL base.
+        if strict_min_len and len(n) < 5:
+            return
+        if n in seen:
+            return
+        seen.add(n)
+        out.append(n)
 
+    # 1. Full normalized base — always pushed (no length restriction)
     push(base)
 
-    no_prefix = re.sub(
-        r"^(twtv|trainer|coach|sub)\s+",
-        "",
-        base,
-        flags=re.I,
-    ).strip()
+    # 2. Strip streamer-style prefixes
+    no_prefix = re.sub(r"^(twtv|trainer|coach|sub)\s+", "", base, flags=re.I).strip()
     if no_prefix != base:
         push(no_prefix)
 
+    # 3. Strip team-tag prefix (e.g. "FNC Razork" → "Razork")
     m = re.match(r"^([A-Z0-9]{1,5})\s+(.+)$", base)
     if m:
         push(m.group(2))
-        push(m.group(2).split(" ")[-1])
 
-    no_suffix = re.sub(
-        r"\s+(NEXT|academy|smurf|alt|main|\d+)$",
-        "",
-        base,
-        flags=re.I,
-    ).strip()
+    # 4. Strip role/account-type suffixes
+    no_suffix = re.sub(r"\s+(NEXT|academy|smurf|alt|main|\d+)$", "", base, flags=re.I).strip()
     if no_suffix != base:
         push(no_suffix)
 
+    # 5. Combination: team prefix stripped + suffix stripped
     if m:
-        post_prefix = m.group(2)
-        cleaned = re.sub(
-            r"\s+(NEXT|academy|smurf|alt|main|\d+)$",
-            "",
-            post_prefix,
-            flags=re.I,
-        ).strip()
+        cleaned = re.sub(r"\s+(NEXT|academy|smurf|alt|main|\d+)$", "", m.group(2), flags=re.I).strip()
         push(cleaned)
-        push(cleaned.split(" ")[-1])
-
-    parts = base.split(" ")
-    if len(parts) > 1:
-        push(parts[-1])
 
     return out
 
@@ -1380,17 +1380,28 @@ def sync_players_with_lookup(db: Session, lookup: dict[str, dict]) -> dict:
         if not rec:
             rec = puuid_index.get(p.puuid)
 
-        # Priority 1: if Lolpros already mapped this Riot ID to a Leaguepedia
-        # canonical name (meta.leaguepedia_id), look it up directly.
+        # Cross-region safeguard: the lookup contains only EMEA pros, so
+        # name-based matching for non-EU Riot accounts (KR/NA/JP/...)
+        # only produces collisions (e.g. Faker's KR "Hide on bush#KR1"
+        # matched sOAZ's KR alt "Baguette on bush" via shared 'bush'
+        # fragment). For non-EU accounts, we ONLY accept the perfect
+        # puuid match — already attempted as Priority 0 above.
+        EU_REGIONS = {"euw1", "eun1", "tr1", "ru"}
+        is_eu_account = (p.region or "").lower() in EU_REGIONS
+
+        # Priority 1: if Lolpros already mapped this Riot ID to a
+        # Leaguepedia canonical name (meta.leaguepedia_id), use that.
+        # Allowed for non-EU too because leaguepedia_id is set by an
+        # explicit cross-link (not a fuzzy match).
         if not rec and meta.leaguepedia_id:
             for cand in _candidate_normalizations(meta.leaguepedia_id):
                 if cand in lookup:
                     rec = lookup[cand]
                     break
 
-        # Priority 2: fall back to summoner-name-based candidates (catches
-        # Riot accounts that Lolpros doesn't know about, e.g. brand-new pros)
-        if not rec:
+        # Priority 2: fall back to summoner-name candidates. EU only —
+        # non-EU accounts keep their previous metadata or stay unidentified.
+        if not rec and is_eu_account:
             for candidate in _candidate_normalizations(p.summoner_name or ""):
                 if candidate in lookup:
                     rec = lookup[candidate]

@@ -2267,73 +2267,103 @@ async function loadRosterTab(puuid, role) {
     return better ? 'better' : 'worse';
   };
 
+  // Pros that have an ingested Riot account → SoloQ comparison table
+  const lecWithSoloq = lec.filter(pro => pro.soloq);
+
+  // Tournament table = LEC stats only (one row per pro)
+  const tournamentRowsHtml = lec.map(pro => {
+    const t = pro.tournament || {};
+    return `
+      <tr>
+        <td><strong>${pro.player_name||'?'}</strong></td>
+        <td><span class="team-pill">${pro.team_code||''}</span> ${pro.team_name||''}</td>
+        <td>${t.games ?? 0}</td>
+        <td class="delta ${cmp(psoloq.kda, t.kda)}">${t.kda ?? '<span class="no-data">—</span>'}</td>
+        <td class="delta ${cmp(psoloq.kp, t.kp)}">${t.kp != null ? (t.kp*100).toFixed(1)+'%' : '<span class="no-data">—</span>'}</td>
+        <td class="delta ${cmp(psoloq.gd15, t.gd15)}">${t.gd15 ?? '<span class="no-data">—</span>'}</td>
+        <td class="delta ${cmp(psoloq.csd15, t.csd15)}">${t.csd15 ?? '<span class="no-data">—</span>'}</td>
+        <td class="delta ${cmp(psoloq.cspm, t.cspm)}">${t.cspm ?? '<span class="no-data">—</span>'}</td>
+      </tr>`;
+  }).join('');
+
+  // SoloQ table = only pros whose Riot account we've ingested + the prospect at the top
+  const soloqRowsHtml = lecWithSoloq.map(pro => {
+    const sq = pro.soloq;
+    return `
+      <tr>
+        <td><strong>${pro.player_name||'?'}</strong></td>
+        <td><span class="team-pill">${pro.team_code||''}</span> ${pro.team_name||''}</td>
+        <td>${sq.games}</td>
+        <td class="delta ${cmp(psoloq.kda, sq.kda)}">${sq.kda}</td>
+        <td class="delta ${cmp(psoloq.kp, sq.kp)}">${(sq.kp*100).toFixed(1)}%</td>
+        <td class="delta ${cmp(psoloq.gd15, sq.gd15)}">${sq.gd15}</td>
+        <td class="delta ${cmp(psoloq.dmg_share, sq.dmg_share)}">${(sq.dmg_share*100).toFixed(1)}%</td>
+        <td class="delta ${cmp(psoloq.vspm, sq.vspm)}">${sq.vspm}</td>
+        <td>${sq.css != null ? `<span class="score-pill ${scoreClass(sq.css)}">${sq.css}</span>` : '—'}</td>
+      </tr>`;
+  }).join('');
+
   root.innerHTML = `
     <div class="card">
-      <h3>vs current LEC ${data.role} roster</h3>
-      <p class="muted">Prospect's SoloQ stats compared to each LEC player at the same role. Pros' SoloQ stats shown when matched (their Riot account is in our DB).</p>
+      <h3>vs current LEC ${data.role} roster — Tournament stats</h3>
+      <p class="muted">Prospect's SoloQ stats vs each LEC pro's official tournament stats at the same role.</p>
       <div style="overflow-x:auto;">
       <table class="compare-table">
         <thead>
           <tr>
             <th>Player</th><th>Team</th>
-            <th>Source</th>
-            <th>Games</th><th>KDA</th><th>KP</th><th>GD@15</th><th>CSD@15</th>
-            <th>Dmg %</th><th>VS/min</th><th>CS/min</th><th>CSS</th>
+            <th>Games</th><th>KDA</th><th>KP</th><th>GD@15</th><th>CSD@15</th><th>CS/min</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="prospect-row">
+            <td><strong>${prospect.summoner_name}</strong> <span class="muted">(prospect — SoloQ)</span></td>
+            <td>${prospect.tier || '—'} ${prospect.lp ? prospect.lp+' LP' : ''}</td>
+            <td>${psoloq.games ?? '—'}</td>
+            <td>${psoloq.kda ?? '—'}</td>
+            <td>${psoloq.kp != null ? (psoloq.kp*100).toFixed(1)+'%' : '—'}</td>
+            <td>${psoloq.gd15 ?? '—'}</td>
+            <td>${psoloq.csd15 ?? '—'}</td>
+            <td>${psoloq.cspm ?? '—'}</td>
+          </tr>
+          ${tournamentRowsHtml}
+        </tbody>
+      </table>
+      </div>
+      <p class="muted" style="margin-top:8px;font-size:11px;">Green = prospect outperforms; red = pro outperforms. Tournament data sourced from lolesports official games.</p>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <h3>vs current LEC ${data.role} roster — SoloQ stats</h3>
+      <p class="muted">${lecWithSoloq.length === 0
+          ? 'No LEC pro at this role has been ingested into our SoloQ data yet. Run a fresh ladder ingest or sync Lolpros to backfill.'
+          : `Prospect compared to ${lecWithSoloq.length} of ${lec.length} LEC pros whose Riot SoloQ account is in our DB.`}</p>
+      ${lecWithSoloq.length === 0 ? '' : `
+      <div style="overflow-x:auto;">
+      <table class="compare-table">
+        <thead>
+          <tr>
+            <th>Player</th><th>Team</th>
+            <th>Games</th><th>KDA</th><th>KP</th><th>GD@15</th>
+            <th>Dmg %</th><th>VS/min</th><th>CSS</th>
           </tr>
         </thead>
         <tbody>
           <tr class="prospect-row">
             <td><strong>${prospect.summoner_name}</strong> <span class="muted">(prospect)</span></td>
             <td>${prospect.tier || '—'} ${prospect.lp ? prospect.lp+' LP' : ''}</td>
-            <td><span class="role-tag">SoloQ</span></td>
             <td>${psoloq.games ?? '—'}</td>
             <td>${psoloq.kda ?? '—'}</td>
             <td>${psoloq.kp != null ? (psoloq.kp*100).toFixed(1)+'%' : '—'}</td>
             <td>${psoloq.gd15 ?? '—'}</td>
-            <td>${psoloq.csd15 ?? '—'}</td>
             <td>${psoloq.dmg_share != null ? (psoloq.dmg_share*100).toFixed(1)+'%' : '—'}</td>
             <td>${psoloq.vspm ?? '—'}</td>
-            <td>${psoloq.cspm ?? '—'}</td>
             <td>${psoloq.css != null ? `<span class="score-pill ${scoreClass(psoloq.css)}">${psoloq.css}</span>` : '—'}</td>
           </tr>
-          ${lec.map(pro => {
-            const t = pro.tournament || {};
-            const sq = pro.soloq;
-            return `
-            <tr>
-              <td><strong>${pro.player_name||'?'}</strong></td>
-              <td><span class="team-pill">${pro.team_code||''}</span> ${pro.team_name||''}</td>
-              <td><span class="role-tag" title="LEC tournament games">LEC</span></td>
-              <td>${t.games ?? 0}</td>
-              <td class="delta ${cmp(psoloq.kda, t.kda)}">${t.kda ?? '<span class="no-data">—</span>'}</td>
-              <td class="delta ${cmp(psoloq.kp, t.kp)}">${t.kp != null ? (t.kp*100).toFixed(1)+'%' : '<span class="no-data">—</span>'}</td>
-              <td class="delta ${cmp(psoloq.gd15, t.gd15)}">${t.gd15 ?? '<span class="no-data">—</span>'}</td>
-              <td class="delta ${cmp(psoloq.csd15, t.csd15)}">${t.csd15 ?? '<span class="no-data">—</span>'}</td>
-              <td>—</td>
-              <td>—</td>
-              <td class="delta ${cmp(psoloq.cspm, t.cspm)}">${t.cspm ?? '<span class="no-data">—</span>'}</td>
-              <td>—</td>
-            </tr>
-            ${sq ? `
-            <tr style="opacity:0.78;">
-              <td style="padding-left:24px;font-style:italic;">${pro.player_name||'?'} <span class="muted">(SoloQ)</span></td>
-              <td></td>
-              <td><span class="role-tag">SoloQ</span></td>
-              <td>${sq.games}</td>
-              <td class="delta ${cmp(psoloq.kda, sq.kda)}">${sq.kda}</td>
-              <td class="delta ${cmp(psoloq.kp, sq.kp)}">${(sq.kp*100).toFixed(1)}%</td>
-              <td class="delta ${cmp(psoloq.gd15, sq.gd15)}">${sq.gd15}</td>
-              <td>—</td>
-              <td class="delta ${cmp(psoloq.dmg_share, sq.dmg_share)}">${(sq.dmg_share*100).toFixed(1)}%</td>
-              <td class="delta ${cmp(psoloq.vspm, sq.vspm)}">${sq.vspm}</td>
-              <td>—</td>
-              <td>${sq.css != null ? `<span class="score-pill ${scoreClass(sq.css)}">${sq.css}</span>` : '—'}</td>
-            </tr>` : ''}
-          `;}).join('')}
+          ${soloqRowsHtml}
         </tbody>
       </table>
-      </div>
-      <p class="muted" style="margin-top:12px;font-size:11px;">Green = prospect outperforms; red = pro outperforms. SoloQ rows for pros appear only when their Riot account is in our DB and has been ingested.</p>
+      </div>`}
     </div>
   `;
 }

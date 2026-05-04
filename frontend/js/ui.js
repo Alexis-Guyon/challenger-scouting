@@ -131,21 +131,62 @@ document.addEventListener('keydown', e => {
 const app = document.getElementById('app');
 const navLinks = document.querySelectorAll('nav a');
 
-function setView(name) {
+// `arg` is the optional second segment of the URL hash:
+//   #/player/<puuid>     → setView('player', '<puuid>')
+//   #/team/<code>        → setView('team', '<code>')
+//   #/leaderboard        → setView('leaderboard')
+function setView(name, arg) {
   navLinks.forEach(a => a.classList.toggle('active', a.dataset.view === name));
   const tpl = document.getElementById('tpl-' + name);
+  if (!tpl) {
+    // Unknown view → fall back to leaderboard
+    setView('leaderboard');
+    return;
+  }
   app.innerHTML = '';
   app.appendChild(tpl.content.cloneNode(true));
+
+  // Update the URL hash so the view is shareable. Player navigation
+  // sometimes happens with arg=undefined (caller already set
+  // window._selectedPuuid) — fall back to that so the URL still gets
+  // the puuid suffix.
+  let urlArg = arg;
+  if (!urlArg && name === 'player' && window._selectedPuuid) {
+    urlArg = window._selectedPuuid;
+  }
+  const desired = urlArg ? `#/${name}/${encodeURIComponent(urlArg)}` : `#/${name}`;
+  if (window.location.hash !== desired) {
+    history.replaceState(null, '', desired);
+  }
+
   if (name === 'leaderboard') initLeaderboard();
   if (name === 'watchlist') initWatchlist();
   if (name === 'champions') initChampions();
   if (name === 'patch') initPatchImpact();
-  if (name === 'player') initPlayer();
+  if (name === 'player') {
+    if (arg) window._selectedPuuid = arg;
+    initPlayer();
+  }
+  if (name === 'team') initTeam(arg);
   if (name === 'compare') initCompare();
   if (name === 'alerts') initAlerts();
   if (name === 'admin') initAdmin();
 }
 navLinks.forEach(a => a.addEventListener('click', e => { e.preventDefault(); setView(a.dataset.view); }));
+
+// Browser back/forward → re-route from the hash
+window.addEventListener('hashchange', () => {
+  const parsed = parseHash();
+  if (parsed) setView(parsed.view, parsed.arg);
+});
+
+// Parse `#/<view>/<arg>` into { view, arg }. Returns null if hash is empty.
+function parseHash() {
+  const h = window.location.hash || '';
+  const m = h.match(/^#\/([\w-]+)(?:\/(.+))?$/);
+  if (!m) return null;
+  return { view: m[1], arg: m[2] ? decodeURIComponent(m[2]) : undefined };
+}
 
 // Smurf-likelihood score (0..100). Higher = more suspect.
 // Role icons (sourced from lolpros.gg's CDN). Each Riot role maps to one

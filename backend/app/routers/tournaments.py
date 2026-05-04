@@ -28,6 +28,9 @@ router = APIRouter(tags=["tournaments"], dependencies=[Depends(get_current_user)
 # --- separate sub-router for /tournament-matches/* ---
 match_router = APIRouter(prefix="/tournament-matches", tags=["tournaments"], dependencies=[Depends(get_current_user)])
 
+# --- /teams/* — pro team scouting page ---
+team_router = APIRouter(prefix="/teams", tags=["teams"], dependencies=[Depends(get_current_user)])
+
 
 # ---------------------------------------------------------------
 # Module-level resolution-index cache.
@@ -794,3 +797,143 @@ async def tournament_match_timeline(match_id: str, db: Session = Depends(get_db)
 
 # Lazy-init shared cache (also used by the SoloQ /matches/{id}/timeline)
 _TIMELINE_CACHE: dict = {}
+
+
+# ============================================================
+# /teams/{code} — pro team scouting page
+# ============================================================
+
+@team_router.get("/{code}")
+def team_detail(code: str, db: Session = Depends(get_db)):
+    """Team scouting view: official lolesports record + active roster
+    + recent tournament results.
+
+    `code` matches ProTeam.code (e.g. "G2", "FNC", "KC"). Case-insensitive.
+    """
+    code_norm = code.strip().upper()
+    team = (
+        db.query(ProTeam)
+        .filter(ProTeam.code.ilike(code_norm))
+        .order_by(ProTeam.league_slug.asc())  # prefer LEC > sub-leagues if duplicate code
+        .first()
+    )
+    if not team:
+        raise HTTPException(404, f"team not found: {code_norm}")
+
+    # --- Recent matches (last 10) ---
+    recent_matches = (
+        db.query(OfficialMatch)
+        .filter((OfficialMatch.blue_team_id == team.id) | (OfficialMatch.red_team_id == team.id))
+        .order_by(desc(OfficialMatch.game_date))
+        .limit(10)
+        .all()
+    )
+    other_team_ids = {
+        (m.red_team_id if m.blue_team_id == team.id else m.blue_team_id)
+        for m in recent_matches
+    } - {None}
+    other_teams = {
+        t.id: t for t in db.query(ProTeam).filter(ProTeam.id.in_(other_team_ids)).all()
+    } if other_team_ids else {}
+    tournament_ids = {m.tournament_id for m in recent_matches if m.tournament_id}
+    tournaments_by_id = {
+        t.id: t for t in db.query(Tournament).filter(Tournament.id.in_(tournament_ids)).all()
+    } if tournament_ids else {}
+
+    matches_payload = []
+    wins = losses = 0
+    for m in recent_matches:
+        we_blue = m.blue_team_id == team.id
+        opp = other_teams.get(m.red_team_id if we_blue else m.blue_team_id)
+        won = (we_blue and m.blue_win is True) or (not we_blue and m.blue_win is False)
+        if m.blue_win is not None:
+            wins += int(won)
+            losses += int(not won)
+        tour = tournaments_by_id.get(m.tournament_id)
+        matches_payload.append({
+            "match_id": m.id,
+            "game_date": m.game_date.isoformat() if m.game_date else None,
+            "league_slug": tour.league_slug if tour else None,
+            "tournament_name": tour.name if tour else None,
+            "block_name": m.block_name,
+            "patch": m.patch,
+            "side": "blue" if we_blue else "red",
+            "won": won if m.blue_win is not None else None,
+            "opponent_code": opp.code if opp else None,
+            "opponent_name": opp.name if opp else None,
+            "opponent_logo": opp.image_url if opp else None,
+        })
+
+    # --- Current roster from PlayerMeta (most reliable: Lolpros-sourced) ---
+    # Match by team_tag first (perfect), fall back to team_name. Both
+    # name and tag are stored on PlayerMeta.current_team / .current_team_tag.
+    roster_q = db.query(PlayerMeta).filter(PlayerMeta.is_pro == True)  # noqa: E712
+    if team.code:
+        roster_q = roster_q.filter(
+            (PlayerMeta.current_team_tag == team.code)
+            | (PlayerMeta.current_team == team.name)
+        )
+    else:
+        roster_q = roster_q.filter(PlayerMeta.current_team == team.name)
+    metas = roster_q.all()
+
+    roster: list[dict] = []
+    if metas:
+        # Pull each member's primary aggregate (most-played) for headline CSS
+        puuids = [m.puuid for m in metas]
+        players_by_puuid = {p.puuid: p for p in db.query(Player).filter(Player.puuid.in_(puuids)).all()}
+        agg_by_puuid: dict[str, PlayerAggregate] = {}
+        for a in (
+            db.query(PlayerAggregate)
+            .filter(PlayerAggregate.puuid.in_(puuids))
+            .order_by(desc(PlayerAggregate.games_played))
+            .all()
+        ):
+            agg_by_puuid.setdefault(a.puuid, a)
+
+        # Latest rank per member
+        latest_ranks: dict[str, "RankSnapshot"] = {}
+        from ..models import RankSnapshot
+        for r in (
+            db.query(RankSnapshot)
+            .filter(RankSnapshot.puuid.in_(puuids))
+            .order_by(desc(RankSnapshot.snapshot_date))
+            .all()
+        ):
+            latest_ranks.setdefault(r.puuid, r)
+
+        for meta in metas:
+            agg = agg_by_puuid.get(meta.puuid)
+            rank = latest_ranks.get(meta.puuid)
+            p = players_by_puuid.get(meta.puuid)
+            roster.append({
+                "puuid": meta.puuid,
+                "summoner_name": p.summoner_name if p else None,
+                "leaguepedia_id": meta.leaguepedia_id,
+                "role": meta.role,  # Lolpros-canonical role
+                "country": meta.country,
+                "age": meta.age,
+                "player_image_url": meta.player_image_url,
+                "tier": rank.tier if rank else None,
+                "lp": rank.lp if rank else None,
+                "css": round(agg.css_score, 1) if agg else None,
+                "css_role": agg.role if agg else None,
+                "games": agg.games_played if agg else 0,
+            })
+        # Order roster by canonical role: TOP, JGL, MID, ADC, SUP, then unknowns
+        ROLE_ORDER = {"Top": 0, "Jungle": 1, "Mid": 2, "Bot": 3, "Support": 4,
+                      "TOP": 0, "JGL": 1, "MID": 2, "ADC": 3, "SUP": 4}
+        roster.sort(key=lambda r: ROLE_ORDER.get(r.get("role") or "", 99))
+
+    return {
+        "team": {
+            "id": team.id,
+            "code": team.code,
+            "name": team.name,
+            "league_slug": team.league_slug,
+            "logo_url": team.image_url,
+        },
+        "record_recent": {"wins": wins, "losses": losses, "games": wins + losses},
+        "roster": roster,
+        "recent_matches": matches_payload,
+    }

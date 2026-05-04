@@ -237,6 +237,97 @@ async function loadWatchlist() {
 }
 function initWatchlist() { loadWatchlist(); }
 
+/* ---------------- TEAM PAGE ---------------- */
+async function initTeam(code) {
+  const card = document.getElementById('team-card');
+  if (!card) return;
+  if (!code) {
+    card.innerHTML = '<p class="muted">No team specified. Try <code>#/team/G2</code>.</p>';
+    return;
+  }
+  card.innerHTML = '<p class="muted">Loading…</p>';
+  let data;
+  try {
+    data = await API('/teams/' + encodeURIComponent(code));
+  } catch (e) {
+    card.innerHTML = `<p class="muted">Team not found: <strong>${code}</strong>. ${e.message}</p>`;
+    return;
+  }
+
+  const t = data.team;
+  const r = data.record_recent;
+  const wr = r.games ? Math.round(r.wins / r.games * 100) : null;
+  const flagFor = (country) => (typeof flagEmoji === 'function' ? flagEmoji(country) : '');
+
+  card.innerHTML = `
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px;">
+      ${t.logo_url ? `<img src="${t.logo_url}" style="width:56px;height:56px;object-fit:contain;" onerror="this.style.display='none'"/>` : ''}
+      <div style="flex:1;">
+        <h2 style="margin:0 0 2px;">${t.code} <span style="font-weight:400;color:var(--muted);">${t.name}</span></h2>
+        <div class="muted" style="font-size:12px;">League: <strong>${(t.league_slug || '?').toUpperCase()}</strong> · Last 10: <strong>${r.wins}W ${r.losses}L</strong>${wr != null ? ` · ${wr}% WR` : ''}</div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <h3>Active roster <span class="muted" style="font-size:11px;font-weight:400;">${data.roster.length} member(s) — sourced from Lolpros</span></h3>
+        ${data.roster.length === 0 ? '<p class="muted">No roster found. Run sync-leaguepedia / sync-lolpros to populate.</p>' : `
+        <table>
+          <thead><tr><th></th><th>Player</th><th>Role</th><th>Country</th><th>Age</th><th>Tier</th><th>CSS</th><th></th></tr></thead>
+          <tbody>
+            ${data.roster.map(m => `
+              <tr style="cursor:pointer;" data-puuid="${m.puuid || ''}">
+                <td>${m.player_image_url ? `<img src="${m.player_image_url}" style="width:36px;height:36px;border-radius:6px;object-fit:cover;" onerror="this.style.display='none'"/>` : ''}</td>
+                <td><strong>${m.leaguepedia_id || m.summoner_name || '?'}</strong>${m.summoner_name ? `<div class="muted" style="font-size:11px;">${m.summoner_name}</div>` : ''}</td>
+                <td>${m.role || '<span class="muted">—</span>'}</td>
+                <td>${flagFor(m.country)} ${m.country || ''}</td>
+                <td>${m.age != null ? m.age : '<span class="muted">—</span>'}</td>
+                <td>${tierBadge(m.tier)} ${m.lp != null ? m.lp + ' LP' : ''}</td>
+                <td>${m.css != null ? `<span class="score-pill ${scoreClass(m.css)}">${m.css}</span>` : '<span class="muted">—</span>'}</td>
+                <td>${m.puuid ? '<button class="secondary">View</button>' : ''}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>`}
+      </div>
+
+      <div class="card">
+        <h3>Recent matches <span class="muted" style="font-size:11px;font-weight:400;">last 10 — click for deep-dive</span></h3>
+        ${data.recent_matches.length === 0 ? '<p class="muted">No tournament matches in DB yet for this team.</p>' : `
+        <table>
+          <thead><tr><th>Date</th><th>League</th><th>Block</th><th></th><th>Opponent</th><th>Side</th><th>Patch</th></tr></thead>
+          <tbody>
+            ${data.recent_matches.map(m => `
+              <tr class="tn-match-row" data-mid="${m.match_id}" style="cursor:pointer;">
+                <td>${m.game_date ? new Date(m.game_date).toLocaleDateString() : '—'}</td>
+                <td><span class="role-tag">${(m.league_slug || '').toUpperCase()}</span></td>
+                <td>${m.block_name || ''}</td>
+                <td>${m.won === true ? '<span class="delta-pos">W</span>' : m.won === false ? '<span class="delta-neg">L</span>' : '<span class="muted">?</span>'}</td>
+                <td>${m.opponent_logo ? `<img src="${m.opponent_logo}" style="width:18px;height:18px;vertical-align:middle;margin-right:4px;object-fit:contain;" onerror="this.style.display='none'"/>` : ''}<strong>${m.opponent_code || '?'}</strong></td>
+                <td>${m.side === 'blue' ? '<span style="color:#6ea8ff;">Blue</span>' : '<span style="color:#ff8b8b;">Red</span>'}</td>
+                <td class="muted" style="font-size:11px;">${m.patch || '—'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>`}
+      </div>
+    </div>
+  `;
+
+  // Click roster row → player profile (deep-link via setView)
+  card.querySelectorAll('tr[data-puuid]').forEach(tr => {
+    if (!tr.dataset.puuid) return;
+    tr.addEventListener('click', () => {
+      window._selectedPuuid = tr.dataset.puuid;
+      setView('player');
+    });
+  });
+  // Click match row → tournament match modal
+  card.querySelectorAll('.tn-match-row').forEach(tr => {
+    tr.addEventListener('click', () => openTournamentMatchModal(tr.dataset.mid));
+  });
+}
+
 /* ---------------- PATCH IMPACT ---------------- */
 async function initPatchImpact() {
   const fromSel = document.getElementById('pi-from');

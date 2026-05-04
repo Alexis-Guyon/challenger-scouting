@@ -116,11 +116,15 @@ function teamCell(p) {
   if (!name) return '<span class="muted">—</span>';
   const logo = p.meta.current_team_logo_url;
   const tag = p.meta.current_team_tag || '';
+  // If we have a tag, wrap in a deep-link to /team/<tag>. Stop the
+  // outer row click via onclick=stopPropagation so View doesn't fire.
+  const teamHref = tag ? `href="#/team/${encodeURIComponent(tag)}"` : '';
+  const linkOpen = tag ? `<a ${teamHref} onclick="event.stopPropagation()" style="color:inherit;text-decoration:none;">` : '';
+  const linkClose = tag ? '</a>' : '';
   if (logo) {
-    return `<span class="team-cell"><img class="team-logo" src="${logo}" alt="${tag}" onerror="this.style.display='none'"/> <span>${name}</span></span>`;
+    return `<span class="team-cell">${linkOpen}<img class="team-logo" src="${logo}" alt="${tag}" onerror="this.style.display='none'"/> <span>${name}</span>${linkClose}</span>`;
   }
-  // No logo → show small text tag pill + name
-  if (tag) return `<span class="team-pill">${tag}</span> ${name}`;
+  if (tag) return `${linkOpen}<span class="team-pill">${tag}</span> ${name}${linkClose}`;
   return name;
 }
 function ageCell(p) {

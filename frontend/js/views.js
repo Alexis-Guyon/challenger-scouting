@@ -1159,6 +1159,86 @@ function initAdmin() {
   };
   refreshStats();
 
+  // ---------- Add player by Riot ID ----------
+  const apSubmit = document.getElementById('ap-submit');
+  if (apSubmit) {
+    apSubmit.addEventListener('click', async () => {
+      const idInput = document.getElementById('ap-id');
+      const riotId = (idInput.value || '').trim();
+      const region = document.getElementById('ap-region').value;
+      const matches = document.getElementById('ap-matches').value || '30';
+      const watch = document.getElementById('ap-watch').checked;
+      const result = document.getElementById('ap-result');
+
+      if (!riotId.includes('#')) {
+        result.innerHTML = '<span style="color:var(--danger);">Riot ID must contain #, e.g. <code>Caps#EUW</code></span>';
+        return;
+      }
+      apSubmit.disabled = true;
+      const original = apSubmit.textContent;
+      apSubmit.textContent = '⏳ Resolving…';
+      result.innerHTML = '<span class="muted">Starting job…</span>';
+
+      try {
+        const params = new URLSearchParams({
+          riot_id: riotId, platform: region,
+          match_count: matches, auto_watch: String(watch),
+        });
+        const resp = await API('/admin/add-player?' + params, { method: 'POST' });
+        const jobId = resp.job_id;
+        result.innerHTML = `<span class="muted">Job <code>${jobId}</code> started — ${resp.riot_id} on ${resp.platform.toUpperCase()}</span>`;
+
+        // Poll the job every 1.5s until done/error
+        const pollStart = Date.now();
+        const poll = setInterval(async () => {
+          let job;
+          try { job = await API('/admin/jobs/' + jobId); } catch { return; }
+          const elapsed = ((Date.now() - pollStart) / 1000).toFixed(0);
+
+          if (job.status === 'done') {
+            clearInterval(poll);
+            const s = job.extras?.stats || job.stats || {};
+            const tierLabel = s.tier ? `${s.tier} ${s.rank || ''} ${s.lp ? s.lp + ' LP' : ''}` : 'unranked';
+            result.innerHTML = `
+              <div class="card" style="background:rgba(34,211,164,0.06);border-color:#22d3a4;padding:12px;margin-top:6px;">
+                <strong>✅ ${s.riot_id || riotId}</strong>
+                <span class="muted" style="margin-left:8px;font-size:11px;">${elapsed}s</span>
+                <div style="margin-top:6px;font-size:12px;">
+                  Region: <strong>${(s.region || region).toUpperCase()}</strong> ·
+                  Rank: <strong>${tierLabel}</strong> ·
+                  Account level: ${s.account_level ?? '?'} ·
+                  Matches ingested: <strong>${s.matches_added}</strong>
+                </div>
+                <div style="margin-top:8px;">
+                  <button class="export-btn" id="ap-open" data-puuid="${s.puuid}">Open profile</button>
+                  ${watch ? '<span class="muted" style="margin-left:10px;font-size:11px;">★ Added to watchlist</span>' : ''}
+                </div>
+              </div>`;
+            document.getElementById('ap-open')?.addEventListener('click', () => {
+              window._selectedPuuid = s.puuid;
+              setView('player');
+            });
+            apSubmit.disabled = false;
+            apSubmit.textContent = original;
+            idInput.value = '';
+            refreshStats();
+          } else if (job.status === 'error') {
+            clearInterval(poll);
+            result.innerHTML = `<span style="color:var(--danger);">❌ Failed: ${job.error || 'unknown error'}</span>`;
+            apSubmit.disabled = false;
+            apSubmit.textContent = original;
+          } else {
+            result.innerHTML = `<span class="muted">[${elapsed}s] ${job.step || job.status}…</span>`;
+          }
+        }, 1500);
+      } catch (e) {
+        result.innerHTML = `<span style="color:var(--danger);">Failed to start: ${e.message}</span>`;
+        apSubmit.disabled = false;
+        apSubmit.textContent = original;
+      }
+    });
+  }
+
   document.getElementById('a-ingest').addEventListener('click', async () => {
     const players = document.getElementById('a-players').value;
     const matches = document.getElementById('a-matches').value;

@@ -580,3 +580,199 @@ def cleanup_demo(db: Session = Depends(get_db)):
             "aggregates": n_aggs, "champion_pool": n_pool,
         }
     }
+
+
+# ============================================================
+# /admin/add-player — manually register a player by Riot ID
+# ============================================================
+
+@router.post("/add-player")
+def add_player(
+    background: BackgroundTasks,
+    riot_id: str = Query(..., description='Riot ID like "Caps#EUW"'),
+    platform: str = Query(default="euw1", description="euw1 / kr / na1 / eun1 / br1 / jp1 / oc1 / la1 / la2 / tr1 / ru"),
+    match_count: int = Query(default=30, ge=1, le=100, description="How many recent ranked matches to ingest"),
+    auto_watch: bool = Query(default=True, description="Add to current user's watchlist after ingest"),
+):
+    """Manually register a player by Riot ID — any region, any rank.
+
+    Designed for tracking specific players the analyst already knows
+    (former pros, French scene amateurs, friends-of-staff, etc.) without
+    waiting for them to surface in a Challenger ladder ingest.
+
+    Pipeline:
+      1. account-v1 by-riot-id   → puuid
+      2. summoner-v4             → account_level + summoner_id
+      3. league-v4 by-puuid      → current tier + LP (any tier, even Iron-Diamond)
+      4. match-v5                → ingest last N ranked SoloQ games + timelines
+      5. aggregate + CSS for this single puuid
+      6. (optional) add to first-admin's watchlist
+    """
+    from fastapi import HTTPException
+    if "#" not in riot_id:
+        raise HTTPException(400, "riot_id must contain '#' (gameName#tagLine)")
+    game_name, tag_line = riot_id.split("#", 1)
+    game_name, tag_line = game_name.strip(), tag_line.strip()
+    if not (game_name and tag_line):
+        raise HTTPException(400, "empty gameName or tagLine")
+
+    job_id = next_job_id("add")
+    create_job(job_id, "add_player", params={
+        "riot_id": riot_id, "platform": platform,
+        "match_count": match_count, "auto_watch": auto_watch,
+    })
+    background.add_task(_run_add_player_job, job_id, game_name, tag_line,
+                        platform, match_count, auto_watch)
+    return {"job_id": job_id, "status": "started", "riot_id": riot_id, "platform": platform}
+
+
+def _run_add_player_job(job_id: str, game_name: str, tag_line: str,
+                        platform: str, match_count: int, auto_watch: bool):
+    """Background worker for add-player."""
+    from datetime import datetime, timezone
+    from ..models import Player, RankSnapshot, User, WatchlistEntry, PlayerAggregate
+    from ..services.aggregation import aggregate_player
+    from ..services.ingestion import _resolve_keys, ingest_player_matches
+    from ..services.riot_client import PLATFORM_TO_REGION, RateLimiter, RiotClient
+    from ..services.scoring import compute_css_for_aggregate
+
+    update_job(job_id, status="running", step="resolve_riot_id")
+
+    super_region = PLATFORM_TO_REGION.get(platform.lower())
+    if not super_region:
+        update_job(job_id, status="error", error=f"unknown platform {platform!r}")
+        return
+
+    # Pick the first configured key. _resolve_keys() returns RIOT_API_KEYS
+    # (multi-key) when set, falling back to RIOT_API_KEY (single). Without
+    # this, the job inherits whatever ENV is in `settings.riot_api_key` —
+    # which may be an expired Personal Key, while the multi-key list has
+    # fresh ones.
+    keys = _resolve_keys()
+    api_key = keys[0] if keys else None
+    if not api_key:
+        update_job(job_id, status="error", error="no Riot API key configured")
+        return
+
+    async def _ingest():
+        limiter = RateLimiter()
+        async with RiotClient(api_key=api_key, platform=platform.lower(),
+                              region=super_region, limiter=limiter) as client:
+            try:
+                acct = await client.account_by_riot_id(game_name, tag_line)
+            except Exception as exc:
+                raise RuntimeError(f"Riot ID lookup failed: {exc}") from exc
+            if not acct or not acct.get("puuid"):
+                raise RuntimeError(f"Riot ID {game_name}#{tag_line} not found on {platform}")
+            puuid = acct["puuid"]
+
+            update_job(job_id, step="summoner_lookup",
+                       extras_merge={"puuid": puuid,
+                                     "game_name": acct.get("gameName"),
+                                     "tag_line": acct.get("tagLine")})
+
+            try:
+                summ = await client.summoner_by_puuid(puuid)
+            except Exception as exc:
+                logger.warning("summoner lookup failed for %s: %s", puuid[:12], exc)
+                summ = {}
+
+            update_job(job_id, step="rank_lookup")
+            try:
+                entries = await client.league_entries_by_puuid(puuid)
+            except Exception as exc:
+                logger.warning("league entries lookup failed for %s: %s", puuid[:12], exc)
+                entries = []
+            soloq_entry = next(
+                (e for e in entries if e.get("queueType") == "RANKED_SOLO_5x5"),
+                None,
+            )
+
+            db = SessionLocal()
+            try:
+                now = datetime.now(timezone.utc)
+                p = db.get(Player, puuid)
+                if not p:
+                    p = Player(puuid=puuid)
+                    db.add(p)
+                p.summoner_id = (summ.get("id") if summ else None) or p.summoner_id
+                p.summoner_name = f"{acct.get('gameName')}#{acct.get('tagLine')}"
+                p.region = platform.lower()
+                p.account_level = (summ.get("summonerLevel", 0)
+                                    if summ else (p.account_level or 0))
+                p.last_updated = now
+
+                if soloq_entry:
+                    db.add(RankSnapshot(
+                        puuid=puuid,
+                        tier=(soloq_entry.get("tier") or "").upper() or None,
+                        rank=soloq_entry.get("rank", "I"),
+                        lp=soloq_entry.get("leaguePoints", 0),
+                        wins=soloq_entry.get("wins", 0),
+                        losses=soloq_entry.get("losses", 0),
+                        snapshot_date=now,
+                    ))
+                db.commit()
+
+                update_job(job_id, step=f"ingesting_matches_{match_count}")
+                added = 0
+                try:
+                    added = await ingest_player_matches(client, db, puuid, count=match_count)
+                except Exception as exc:
+                    logger.exception("match ingest failed for %s: %s", puuid[:12], exc)
+
+                update_job(job_id, step="aggregate")
+                try:
+                    aggregate_player(db, puuid)
+                except Exception as exc:
+                    logger.exception("aggregate failed for %s: %s", puuid[:12], exc)
+
+                update_job(job_id, step="score")
+                try:
+                    for agg in db.query(PlayerAggregate).filter_by(puuid=puuid).all():
+                        css, raw, _ = compute_css_for_aggregate(db, agg)
+                        agg.css_score = css
+                        agg.css_raw = raw
+                    db.commit()
+                except Exception as exc:
+                    logger.exception("score failed for %s: %s", puuid[:12], exc)
+
+                if auto_watch:
+                    update_job(job_id, step="watchlist")
+                    admin_user = db.query(User).filter(User.role == "admin").first()
+                    if admin_user:
+                        existing = db.query(WatchlistEntry).filter_by(
+                            user_id=admin_user.id, puuid=puuid).first()
+                        if not existing:
+                            db.add(WatchlistEntry(
+                                user_id=admin_user.id, puuid=puuid,
+                                tag="manually-added",
+                                added_at=now,
+                                stage="watch",
+                                stage_changed_at=now,
+                            ))
+                            db.commit()
+
+                stats = {
+                    "puuid": puuid,
+                    "riot_id": f"{acct.get('gameName')}#{acct.get('tagLine')}",
+                    "region": platform.lower(),
+                    "tier": (soloq_entry.get("tier") if soloq_entry else None),
+                    "rank": (soloq_entry.get("rank") if soloq_entry else None),
+                    "lp": (soloq_entry.get("leaguePoints") if soloq_entry else None),
+                    "wins": (soloq_entry.get("wins") if soloq_entry else None),
+                    "losses": (soloq_entry.get("losses") if soloq_entry else None),
+                    "account_level": p.account_level,
+                    "matches_added": added,
+                }
+                update_job(job_id, status="done", step="done",
+                           extras_merge={"stats": stats})
+                logger.info("add-player done: %s", stats)
+            finally:
+                db.close()
+
+    try:
+        asyncio.run(_ingest())
+    except Exception as exc:
+        logger.exception("add-player failed: %s", exc)
+        update_job(job_id, status="error", error=str(exc))

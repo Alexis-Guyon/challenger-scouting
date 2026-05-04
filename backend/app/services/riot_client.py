@@ -186,11 +186,36 @@ class RiotClient:
         host = PLATFORM_HOSTS[self.platform]
         return await self._get(host, f"/lol/summoner/v4/summoners/by-puuid/{puuid}")
 
+    async def league_entries_by_puuid(self, puuid: str) -> list[dict]:
+        """Ranked entries (SoloQ + Flex) for a single account.
+
+        Used by the manual "Add Player" flow to capture the player's
+        current rank regardless of tier — Iron through Challenger.
+        Returns [] when the account has no ranked games on this season.
+        """
+        host = PLATFORM_HOSTS[self.platform]
+        result = await self._get(host, f"/lol/league/v4/entries/by-puuid/{puuid}")
+        return result or []
+
     # ---------- Region-host endpoints ----------
     async def account_by_puuid(self, puuid: str) -> dict | None:
         """Resolve gameName + tagLine via account-v1 (region-host)."""
         host = REGION_HOSTS[self.region]
         return await self._get(host, f"/riot/account/v1/accounts/by-puuid/{puuid}")
+
+    async def account_by_riot_id(self, game_name: str, tag_line: str) -> dict | None:
+        """Resolve `gameName#tagLine` → puuid via account-v1 (region-host).
+
+        Used for the "Add player by Riot ID" feature — lets analysts track
+        any account, regardless of region or rank, without waiting for it
+        to surface in a Challenger/GM/Master ladder ingest.
+        """
+        from urllib.parse import quote
+        host = REGION_HOSTS[self.region]
+        return await self._get(
+            host,
+            f"/riot/account/v1/accounts/by-riot-id/{quote(game_name)}/{quote(tag_line)}",
+        )
 
     async def match_ids(self, puuid: str, count: int = 30, queue: int = 420, start: int = 0) -> list[str]:
         host = REGION_HOSTS[self.region]

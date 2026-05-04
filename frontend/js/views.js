@@ -1152,12 +1152,146 @@ function initAlerts() {
 /* ---------------- ADMIN ---------------- */
 function initAdmin() {
   const log = document.getElementById('a-log');
-  const stats = document.getElementById('a-stats');
-  const refreshStats = async () => {
-    const s = await API('/admin/stats');
-    stats.textContent = JSON.stringify(s, null, 2);
+
+  // ---------- Hero metrics + scheduler + recent jobs ----------
+  const renderMetrics = (s) => {
+    const grid = document.getElementById('a-metrics');
+    if (!grid) return;
+    const fmt = (n) => (n ?? 0).toLocaleString();
+    const cards = [
+      { label: 'SoloQ players',     value: fmt(s.soloq?.players),       sub: `${fmt(s.soloq?.matches)} matches`,        cls: '' },
+      { label: 'Aggregates',         value: fmt(s.soloq?.aggregates),    sub: `${fmt(s.soloq?.participations)} part.`,   cls: '' },
+      { label: 'Pros matched',       value: fmt(s.leaguepedia?.matched_pros), sub: 'Lolpros / Leaguepedia',             cls: 'metric-emerald' },
+      { label: 'Tournament matches', value: fmt(s.tournaments?.official_matches), sub: `${fmt(s.tournaments?.tournaments)} tournaments`, cls: 'metric-amber' },
+      { label: 'Pro teams',          value: fmt(s.tournaments?.pro_teams), sub: `${fmt(s.tournaments?.lec_roster)} LEC roster`, cls: 'metric-violet' },
+    ];
+    grid.innerHTML = cards.map(c => `
+      <div class="metric-card ${c.cls}">
+        <div class="metric-label">${c.label}</div>
+        <div class="metric-value">${c.value}</div>
+        <div class="metric-sub">${c.sub}</div>
+      </div>
+    `).join('');
   };
-  refreshStats();
+
+  const renderScheduler = (cfg) => {
+    const body = document.getElementById('a-scheduler-body');
+    const pill = document.getElementById('a-sched-status-pill');
+    if (!body || !pill) return;
+
+    if (!cfg.enabled) {
+      pill.className = 'status-pill status-idle';
+      pill.textContent = 'disabled';
+      body.innerHTML = '<span class="muted" style="font-size:12px;">Scheduler disabled. Set <code>DAILY_INGEST_ENABLED=true</code> in <code>.env</code> + restart uvicorn.</span>';
+      return;
+    }
+    pill.className = cfg.in_flight ? 'status-pill status-running' : 'status-pill status-active';
+    pill.textContent = cfg.in_flight ? 'running' : 'armed';
+
+    const next = cfg.next_run_at ? new Date(cfg.next_run_at).toLocaleString() : '—';
+    const rotation = cfg.rotation || {};
+    const todayTier = rotation.enabled ? rotation.today_tier : '<span class="muted">all tiers</span>';
+    const tomorrowTier = rotation.enabled ? rotation.tomorrow_tier : '<span class="muted">all tiers</span>';
+
+    body.innerHTML = `
+      <dl class="sched-grid">
+        <dt>Trigger</dt><dd>${cfg.trigger}</dd>
+        <dt>Next run</dt><dd>${next}</dd>
+        <dt>Today's tier</dt><dd><span class="sched-tier-pill">${(todayTier || '').toString().toUpperCase()}</span></dd>
+        <dt>Tomorrow</dt><dd><span class="sched-tier-pill" style="background:linear-gradient(135deg,#a78bfa 0%,#7c5cff 100%);">${(tomorrowTier || '').toString().toUpperCase()}</span></dd>
+        <dt>Regions</dt><dd>${(cfg.regions || []).map(r => r.toUpperCase()).join(' · ')}</dd>
+        <dt>Scope</dt><dd>${cfg.players_per_tier} players × ${cfg.games_per_player} games</dd>
+        <dt>Keys</dt><dd><strong>${cfg.keys_configured}</strong> · partition <code>${cfg.partition}</code></dd>
+      </dl>
+    `;
+  };
+
+  const renderJobs = (data) => {
+    const list = document.getElementById('a-jobs-list');
+    if (!list) return;
+    const jobs = (data.jobs || data || []).slice(0, 10);
+    if (!jobs.length) {
+      list.innerHTML = '<span class="muted" style="font-size:12px;">No jobs yet.</span>';
+      return;
+    }
+    const since = (iso) => {
+      if (!iso) return '';
+      const dt = Date.now() - new Date(iso).getTime();
+      const m = Math.floor(dt / 60000);
+      if (m < 1) return 'just now';
+      if (m < 60) return `${m}m ago`;
+      const h = Math.floor(m / 60);
+      if (h < 24) return `${h}h ago`;
+      return new Date(iso).toLocaleDateString();
+    };
+    list.innerHTML = jobs.map(j => {
+      const cls = `status-pill status-${(j.status || 'idle').replace(/[^a-z]/g, '')}`;
+      return `
+        <div class="job-row" title="${j.id}">
+          <div class="job-row-main">
+            <span class="job-row-id">${j.id}</span>
+            <span class="job-row-kind">${j.kind || '?'}</span>
+            <span class="job-row-step">${j.step || ''}</span>
+          </div>
+          <span class="${cls}">${j.status || '?'}</span>
+          <span class="job-row-when">${since(j.updated_at || j.created_at)}</span>
+        </div>
+      `;
+    }).join('');
+  };
+
+  const refreshAll = async () => {
+    try {
+      const [stats, sched, jobs] = await Promise.all([
+        API('/admin/stats').catch(() => ({})),
+        API('/admin/scheduler/status').catch(() => ({})),
+        API('/admin/jobs').catch(() => ({jobs: []})),
+      ]);
+      renderMetrics(stats);
+      renderScheduler(sched);
+      renderJobs(jobs);
+    } catch (e) {
+      console.error('admin refresh failed', e);
+    }
+  };
+  // Back-compat alias for the existing per-button handlers below that
+  // call refreshStats() at the end of their job-poll loops.
+  const refreshStats = refreshAll;
+
+  refreshAll();
+  // Keep the dashboard live while the user has it open
+  const _adminInterval = setInterval(refreshAll, 5000);
+  // Stop polling when the user navigates away
+  const stopPolling = () => clearInterval(_adminInterval);
+  document.querySelectorAll('nav a').forEach(a => {
+    if (a.dataset.view !== 'admin') {
+      a.addEventListener('click', stopPolling, { once: true });
+    }
+  });
+
+  document.getElementById('a-refresh')?.addEventListener('click', refreshAll);
+
+  // Trigger-now scheduler button
+  document.getElementById('a-sched-trigger')?.addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget;
+    btn.disabled = true; btn.textContent = '⏳ Starting…';
+    try {
+      const r = await API('/admin/scheduler/trigger-now', { method: 'POST' });
+      if (r.ok) {
+        btn.textContent = '✓ Started';
+        setTimeout(() => { btn.textContent = '▶ Trigger now'; btn.disabled = false; }, 2500);
+        refreshAll();
+      } else {
+        btn.textContent = '✕ Failed';
+        alert('Failed: ' + (r.error || JSON.stringify(r)));
+        btn.disabled = false;
+      }
+    } catch (e) {
+      btn.textContent = '✕ Failed';
+      alert('Failed: ' + e.message);
+      btn.disabled = false;
+    }
+  });
 
   // ---------- Add player by Riot ID ----------
   const apSubmit = document.getElementById('ap-submit');

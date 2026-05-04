@@ -476,85 +476,52 @@
 </template>
 
 <template id="tpl-admin">
-  <section class="view">
-    <div class="card">
-      <h3>Pipeline control</h3>
-      <p class="muted">Pulls Challenger players → matches → timelines → metrics → CSS scores.</p>
-      <div class="row">
-        <label>Players (per tier)
-          <input id="a-players" type="number" value="50" min="1" max="2000"/>
-        </label>
-        <label>Matches per player
-          <input id="a-matches" type="number" value="30" min="1" max="100"/>
-        </label>
-        <fieldset style="border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12px;">
-          <legend style="color:var(--muted);padding:0 6px;">Tiers</legend>
-          <label style="display:inline-flex;align-items:center;gap:5px;margin-right:10px;font-size:12px;">
-            <input id="a-tier-challenger" type="checkbox" checked/> Challenger
-          </label>
-          <label style="display:inline-flex;align-items:center;gap:5px;margin-right:10px;font-size:12px;">
-            <input id="a-tier-grandmaster" type="checkbox"/> GM
-          </label>
-          <label style="display:inline-flex;align-items:center;gap:5px;font-size:12px;">
-            <input id="a-tier-master" type="checkbox"/> Master
-          </label>
-        </fieldset>
-        <fieldset style="border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12px;max-width:520px;">
-          <legend style="color:var(--muted);padding:0 6px;">Regions</legend>
-          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
-            <input class="a-region" type="checkbox" value="euw1" checked/> EUW
-          </label>
-          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
-            <input class="a-region" type="checkbox" value="kr"/> KR
-          </label>
-          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
-            <input class="a-region" type="checkbox" value="na1"/> NA
-          </label>
-          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
-            <input class="a-region" type="checkbox" value="eun1"/> EUNE
-          </label>
-          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
-            <input class="a-region" type="checkbox" value="br1"/> BR
-          </label>
-          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
-            <input class="a-region" type="checkbox" value="jp1"/> JP
-          </label>
-          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
-            <input class="a-region" type="checkbox" value="oc1"/> OCE
-          </label>
-          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
-            <input class="a-region" type="checkbox" value="la1"/> LAN
-          </label>
-          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
-            <input class="a-region" type="checkbox" value="la2"/> LAS
-          </label>
-          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
-            <input class="a-region" type="checkbox" value="tr1"/> TR
-          </label>
-          <label style="display:inline-flex;align-items:center;gap:4px;margin:2px 8px 2px 0;font-size:12px;">
-            <input class="a-region" type="checkbox" value="ru"/> RU
-          </label>
-        </fieldset>
-        <button id="a-ingest">Run ingestion</button>
-        <button id="a-recompute" class="secondary">Recompute scores only</button>
-        <button id="a-lolpros">Sync Lolpros (EU pros)</button>
-        <button id="a-leaguepedia" class="secondary" title="Quick sync: wikitext + Cargo (~75 s). Refresh after every SoloQ ingest.">Sync Leaguepedia (~75 s)</button>
-        <button id="a-leaguepedia-full" class="secondary" title="Full sync: everything + bulk-crawl every EMEA pro's Lolpros profile (~6 min). Perfect puuid matching. Run weekly.">Sync Leaguepedia FULL (~6 min)</button>
-        <button id="a-tournaments" class="secondary" title="Sync ALL tracked leagues (EMEA + KR + NA + Intl). Takes 30-60 min on first run.">Sync tournaments (ALL)</button>
-        <button id="a-tournaments-eu" class="secondary" title="EMEA only: LEC + LFL + Prime + Superliga + ERLs">EU only</button>
-        <button id="a-tournaments-kr" class="secondary" title="KR only: LCK + LCK CL">KR only</button>
-        <button id="a-tournaments-na" class="secondary" title="Americas only: LCS + NACL + LTA N/S/Cross">NA only</button>
-        <button id="a-tournaments-intl" class="secondary" title="International: MSI + Worlds + First Stand + WQS">Intl only</button>
-        <button id="a-resolve" class="secondary" title="Resolve Riot IDs of stub players (auto-imported as '(unknown)')">Resolve unknown names</button>
+  <section class="view admin-view">
+
+    <!-- ============ HERO STATS ============ -->
+    <div class="admin-hero">
+      <div class="admin-hero-head">
+        <div>
+          <h2 style="margin:0;letter-spacing:-0.01em;">⚙ Admin</h2>
+          <p class="muted" style="margin:2px 0 0;font-size:12px;">Data pipeline + scheduler control.</p>
+        </div>
+        <div class="admin-hero-actions">
+          <button class="secondary" id="a-refresh" title="Refresh the metrics + jobs panels">↻ Refresh</button>
+        </div>
       </div>
-      <p class="muted" style="font-size:11px;margin:8px 0 0;">Big batches: 300 players × 30 matches ≈ 18 000 Riot calls (~6 h at 100 req/2 min). Stub players auto-resolved + scoring rebuilt + alerts sent at the end. Re-running picks up where it stopped.</p>
-      <div id="a-progress" class="muted" style="font-size:12px;margin:8px 0 0;display:none;"></div>
-      <pre id="a-log" class="log"></pre>
+      <div id="a-metrics" class="metric-grid"></div>
     </div>
-    <div class="card">
-      <h3>➕ Add player by Riot ID</h3>
-      <p class="muted" style="margin-top:0;">Track any account regardless of region or rank — useful for scouts you already know by name (former pros, friends-of-staff, French scene amateurs, etc.). Pulls account-v1 + summoner-v4 + ranked entries + last N matches + builds CSS.</p>
-      <div class="row" style="align-items:flex-end;">
+
+    <!-- ============ SCHEDULER + RECENT JOBS (side-by-side) ============ -->
+    <div class="grid-2">
+      <div class="card admin-section" id="a-scheduler-card">
+        <div class="admin-section-head">
+          <h3>⏰ Daily scheduler</h3>
+          <span id="a-sched-status-pill" class="status-pill status-idle">—</span>
+        </div>
+        <div id="a-scheduler-body" class="muted">Loading…</div>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+          <button id="a-sched-trigger" class="export-btn" title="Run the daily ingest right now (skip waiting for 4am)">▶ Trigger now</button>
+        </div>
+      </div>
+
+      <div class="card admin-section">
+        <div class="admin-section-head">
+          <h3>📋 Recent jobs</h3>
+          <span class="muted" style="font-size:11px;">last 10</span>
+        </div>
+        <div id="a-jobs-list" class="job-list"><span class="muted">Loading…</span></div>
+      </div>
+    </div>
+
+    <!-- ============ ADD PLAYER BY RIOT ID ============ -->
+    <div class="card admin-section">
+      <div class="admin-section-head">
+        <h3>➕ Add player by Riot ID</h3>
+        <span class="muted" style="font-size:11px;">any region · any rank</span>
+      </div>
+      <p class="muted" style="font-size:12px;margin:0 0 12px;">Track any account by Riot ID (former pros, scene amateurs, friends-of-staff). account-v1 → ranked → last N matches → CSS.</p>
+      <div class="row" style="align-items:flex-end;gap:10px;">
         <label>Riot ID
           <input id="ap-id" type="text" placeholder="Caps#EUW" style="min-width:220px;"/>
         </label>
@@ -573,20 +540,98 @@
             <option value="ru">RU</option>
           </select>
         </label>
-        <label>Match history depth
+        <label>Match history
           <input id="ap-matches" type="number" value="30" min="1" max="100"/>
         </label>
-        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;text-transform:none;">
+        <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;text-transform:none;color:var(--text);">
           <input id="ap-watch" type="checkbox" checked/> Add to watchlist
         </label>
         <button id="ap-submit" class="export-btn">Add &amp; ingest</button>
       </div>
       <div id="ap-result" style="margin-top:10px;"></div>
     </div>
-    <div class="card">
-      <h3>System stats</h3>
-      <pre id="a-stats" class="log"></pre>
+
+    <!-- ============ MAIN INGEST ============ -->
+    <div class="card admin-section">
+      <div class="admin-section-head">
+        <h3>🔁 Run SoloQ ingestion</h3>
+        <span class="muted" style="font-size:11px;">Riot match-v5 → CSS</span>
+      </div>
+      <p class="muted" style="font-size:12px;margin:0 0 14px;">Pulls Challenger/GM/Master ladders → match history + timelines → aggregates → CSS scores. Auto-routes to multi-key parallel when <code>RIOT_API_KEYS</code> is set.</p>
+
+      <div class="ingest-controls">
+        <div class="ingest-numeric">
+          <label>Players per tier
+            <input id="a-players" type="number" value="50" min="1" max="2000"/>
+          </label>
+          <label>Matches per player
+            <input id="a-matches" type="number" value="30" min="1" max="100"/>
+          </label>
+        </div>
+
+        <div class="ingest-pills">
+          <span class="ingest-pill-label">Tiers</span>
+          <label class="check-pill"><input id="a-tier-challenger" type="checkbox" checked/><span>Challenger</span></label>
+          <label class="check-pill"><input id="a-tier-grandmaster" type="checkbox"/><span>GM</span></label>
+          <label class="check-pill"><input id="a-tier-master" type="checkbox"/><span>Master</span></label>
+        </div>
+
+        <div class="ingest-pills">
+          <span class="ingest-pill-label">Regions</span>
+          <label class="check-pill"><input class="a-region" type="checkbox" value="euw1" checked/><span>EUW</span></label>
+          <label class="check-pill"><input class="a-region" type="checkbox" value="kr"/><span>KR</span></label>
+          <label class="check-pill"><input class="a-region" type="checkbox" value="na1"/><span>NA</span></label>
+          <label class="check-pill"><input class="a-region" type="checkbox" value="eun1"/><span>EUNE</span></label>
+          <label class="check-pill"><input class="a-region" type="checkbox" value="br1"/><span>BR</span></label>
+          <label class="check-pill"><input class="a-region" type="checkbox" value="jp1"/><span>JP</span></label>
+          <label class="check-pill"><input class="a-region" type="checkbox" value="oc1"/><span>OCE</span></label>
+          <label class="check-pill"><input class="a-region" type="checkbox" value="la1"/><span>LAN</span></label>
+          <label class="check-pill"><input class="a-region" type="checkbox" value="la2"/><span>LAS</span></label>
+          <label class="check-pill"><input class="a-region" type="checkbox" value="tr1"/><span>TR</span></label>
+          <label class="check-pill"><input class="a-region" type="checkbox" value="ru"/><span>RU</span></label>
+        </div>
+
+        <div class="ingest-actions">
+          <button id="a-ingest" class="export-btn">▶ Run ingestion</button>
+          <button id="a-recompute" class="secondary" title="Re-run aggregation + smurf scoring + CSS without fetching new matches">🧮 Recompute scores</button>
+          <button id="a-resolve" class="secondary" title="Resolve Riot IDs of stub players (auto-imported as '(unknown)')">🔍 Resolve unknown names</button>
+        </div>
+      </div>
+
+      <div id="a-progress" class="muted" style="font-size:12px;margin:10px 0 0;display:none;"></div>
+      <pre id="a-log" class="log"></pre>
     </div>
+
+    <!-- ============ PRO IDENTIFICATION ============ -->
+    <div class="card admin-section">
+      <div class="admin-section-head">
+        <h3>🆔 Pro identification</h3>
+        <span class="muted" style="font-size:11px;">Lolpros + Leaguepedia → PlayerMeta</span>
+      </div>
+      <p class="muted" style="font-size:12px;margin:0 0 12px;">Matches Riot accounts to their Lolpros / Leaguepedia profile so the ladder shows team, age, country, role, social handles.</p>
+      <div class="ingest-actions">
+        <button id="a-lolpros" class="export-btn" title="Crawl Lolpros active EMEA roster (preferred — gives encrypted_puuid for perfect match)">🎯 Sync Lolpros</button>
+        <button id="a-leaguepedia" class="secondary" title="Quick sync: wikitext + Cargo (~75 s). Refresh after every SoloQ ingest.">⚡ Sync Leaguepedia <span class="muted" style="font-size:10px;">~75s</span></button>
+        <button id="a-leaguepedia-full" class="secondary" title="Full sync + bulk-crawl every EMEA pro's Lolpros profile (~6 min). Perfect puuid matching. Run weekly.">🔥 Sync Leaguepedia FULL <span class="muted" style="font-size:10px;">~6min</span></button>
+      </div>
+    </div>
+
+    <!-- ============ TOURNAMENT DATA ============ -->
+    <div class="card admin-section">
+      <div class="admin-section-head">
+        <h3>🏆 Tournament data</h3>
+        <span class="muted" style="font-size:11px;">lolesports unofficial API → OfficialMatch</span>
+      </div>
+      <p class="muted" style="font-size:12px;margin:0 0 12px;">Pulls match metadata + frame data (gold/CS/objectives @10/@15) for tracked leagues. Skip-by-default — heavy.</p>
+      <div class="ingest-actions">
+        <button id="a-tournaments" class="export-btn" title="Sync ALL tracked leagues. Takes 30-60 min on first run.">🌍 ALL leagues</button>
+        <button id="a-tournaments-eu" class="secondary" title="EMEA only: LEC + LFL + Prime + Superliga + ERLs">🇪🇺 EU only</button>
+        <button id="a-tournaments-kr" class="secondary" title="KR only: LCK + LCK CL">🇰🇷 KR only</button>
+        <button id="a-tournaments-na" class="secondary" title="Americas only: LCS + NACL + LTA N/S/Cross">🇺🇸 NA only</button>
+        <button id="a-tournaments-intl" class="secondary" title="MSI + Worlds + First Stand + WQS">🏅 Intl only</button>
+      </div>
+    </div>
+
   </section>
 </template>
 

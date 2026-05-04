@@ -1506,3 +1506,68 @@ body:has(.match-modal.open) { overflow: hidden; }
   .kanban-board { grid-template-columns: 1fr; }
   .kanban-col { max-height: none; }
 }
+
+/* ---------- Account grouping by pro ---------- */
+.account-count-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  background: linear-gradient(135deg, #5b8def 0%, #7c5cff 100%);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 999px;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  vertical-align: middle;
+  box-shadow: 0 1px 0 rgba(255,255,255,0.2) inset, 0 2px 5px rgba(91,141,239,0.3);
+}
+.account-count-badge:hover {
+  filter: brightness(1.1);
+}
+
+.accounts-popover {
+  position: absolute;
+  z-index: 90;
+  min-width: 380px;
+  max-width: 560px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: 8px;
+  font-size: 12px;
+}
+.accounts-popover-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  margin-bottom: 4px;
+}
+.accounts-popover-close {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--muted);
+  font-size: 14px;
+  padding: 0 6px;
+  cursor: pointer;
+}
+.accounts-popover-close:hover {
+  color: var(--danger);
+  background: transparent;
+  box-shadow: none;
+}
+.accounts-popover-table {
+  width: 100%;
+  font-size: 11px;
+}
+.accounts-popover-table th,
+.accounts-popover-table td {
+  padding: 4px 8px;
+}
+.accounts-popover-table tr[data-puuid]:hover {
+  background: var(--bg-3);
+}

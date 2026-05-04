@@ -196,12 +196,17 @@
       </label>
       <button id="f-apply">Apply</button>
     </div>
-    <div class="quick-filters" style="display:flex;gap:6px;margin:0 0 10px;flex-wrap:wrap;">
+    <div class="quick-filters" style="display:flex;gap:6px;margin:0 0 10px;flex-wrap:wrap;align-items:center;">
       <button class="quick-pill" data-quick="fa" title="Show only Free Agents — pros with no current team. One-click recruitment view.">🎯 Free Agents</button>
       <button class="quick-pill" data-quick="rising" title="Show only players flagged as Rising Stars — biggest CSS gain across recent patches.">🌟 Rising Stars</button>
       <button class="quick-pill" data-quick="u21" title="Show only players aged 21 or younger.">👶 U21</button>
       <button class="quick-pill" data-quick="contract90" title="Show pros whose contract ends within 90 days.">⏳ Contract &lt; 90d</button>
       <button class="quick-pill" data-quick="reset" title="Clear all filters">✕ Clear</button>
+      <span style="flex:1;"></span>
+      <label class="quick-pill" id="lb-group-toggle-wrap" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;" title="Collapse all of a pro's Riot accounts (main + smurfs + alts) into a single line with an '+N accounts' badge.">
+        <input type="checkbox" id="lb-group-toggle" style="margin:0;cursor:pointer;"/>
+        🧬 Group accounts by pro
+      </label>
     </div>
     <div class="table-wrap">
       <table id="lb-table">

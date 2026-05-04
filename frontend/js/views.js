@@ -62,6 +62,58 @@ async function loadLeaderboard() {
   // Client-side post-filter for "amateur only" (no LP entry) — note this can shrink the visible page
   if (proStatus === 'amateur') data = data.filter(r => !r.meta);
 
+  // 🧬 Account grouping by pro — collapse all of a pro's accounts into
+  // one line with a "+N accounts" badge. Each row's group key is its
+  // Lolpros slug (stable across all of a pro's Riot accounts) when known,
+  // otherwise the puuid (each account stays its own row).
+  const groupOn = document.getElementById('lb-group-toggle')?.checked;
+  let groupedHidden = 0;
+  if (groupOn) {
+    const groups = new Map();
+    for (const row of data) {
+      const key = row.meta?.lolpros_slug || row.puuid;
+      const cur = groups.get(key);
+      // Keep the row with the higher CSS as the "primary" account display.
+      // Falls back to games_played as tiebreaker.
+      const score = (row.css_score ?? 0) * 1000 + (row.games_played ?? 0);
+      if (!cur || score > cur._score) {
+        const accounts = cur ? cur._accounts : [];
+        accounts.push(row);
+        groups.set(key, { ...row, _score: score, _accounts: accounts.concat(cur ? [] : []) });
+      } else {
+        cur._accounts.push(row);
+      }
+    }
+    // Re-emit in original order, dropping non-primaries; track the
+    // sibling list per primary so we can render the popover.
+    const primaries = new Map();
+    for (const [k, v] of groups.entries()) {
+      // The "current row" of v is the primary (last-set winner). Build
+      // its full siblings list (including itself, sorted by CSS desc).
+      const siblings = [];
+      for (const r of data) {
+        const rk = r.meta?.lolpros_slug || r.puuid;
+        if (rk === k) siblings.push(r);
+      }
+      siblings.sort((a, b) => (b.css_score ?? 0) - (a.css_score ?? 0));
+      // Primary = highest-CSS sibling (stable).
+      v.__primary_puuid = siblings[0].puuid;
+      v.__siblings = siblings;
+      primaries.set(k, v);
+    }
+    const before = data.length;
+    data = data.filter(r => {
+      const k = r.meta?.lolpros_slug || r.puuid;
+      const p = primaries.get(k);
+      return p && p.__primary_puuid === r.puuid;
+    }).map(r => {
+      const k = r.meta?.lolpros_slug || r.puuid;
+      const p = primaries.get(k);
+      return { ...r, _account_count: p.__siblings.length, _siblings: p.__siblings };
+    });
+    groupedHidden = before - data.length;
+  }
+
   const tbody = document.querySelector('#lb-table tbody');
   tbody.innerHTML = '';
 
@@ -100,9 +152,12 @@ async function loadLeaderboard() {
     const tr = document.createElement('tr');
     tr.className = 'lb-row';
     tr.dataset.puuid = row.puuid;
+    const accountBadge = row._account_count && row._account_count > 1
+      ? ` <span class="account-count-badge" data-puuid="${row.puuid}" title="Click to see all ${row._account_count} accounts of this pro">+${row._account_count - 1} accounts</span>`
+      : '';
     tr.innerHTML = `
       <td>${_lbOffset + i + 1}</td>
-      <td><strong>${row.summoner_name || '(unknown)'}</strong> ${smurfBadge(row)}${risingBadge(row)}</td>
+      <td><strong>${row.summoner_name || '(unknown)'}</strong> ${smurfBadge(row)}${risingBadge(row)}${accountBadge}</td>
       <td>${regionBadge(row.region)}</td>
       <td>${proBadge(row)}</td>
       <td>${teamCell(row)}</td>
@@ -123,13 +178,24 @@ async function loadLeaderboard() {
       </td>
     `;
     tbody.appendChild(tr);
+    // Stash siblings on the row element for the popover handler
+    if (row._siblings) tr._siblings = row._siblings;
   });
 
+  // Update pager subtext if grouping is on (so the user knows N accounts collapsed)
+  if (groupOn && groupedHidden > 0) {
+    const note = document.createElement('span');
+    note.style.cssText = 'color:var(--accent);margin-left:8px;font-size:11px;';
+    note.textContent = `· 🧬 ${groupedHidden} alt account(s) collapsed`;
+    pager.querySelector('span:first-child')?.appendChild(note);
+  }
+
   // Whole row is clickable now — open profile unless click hit the star
-  // (the star handles its own thing and stops propagation).
+  // or the account-count badge.
   document.querySelectorAll('tr.lb-row').forEach(tr => {
     tr.addEventListener('click', (e) => {
       if (e.target.closest('.star')) return;
+      if (e.target.closest('.account-count-badge')) return;
       window._selectedPuuid = tr.dataset.puuid;
       setView('player');
     });
@@ -140,10 +206,75 @@ async function loadLeaderboard() {
       toggleWatch(s.dataset.puuid, s);
     })
   );
+  // Account count badge → small popover listing siblings
+  document.querySelectorAll('.account-count-badge').forEach(b =>
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const tr = b.closest('tr.lb-row');
+      const siblings = tr?._siblings || [];
+      showAccountsPopover(b, siblings);
+    })
+  );
+}
+
+function showAccountsPopover(anchor, siblings) {
+  // Close any existing popover
+  document.querySelectorAll('.accounts-popover').forEach(p => p.remove());
+  if (!siblings.length) return;
+  const pop = document.createElement('div');
+  pop.className = 'accounts-popover';
+  pop.innerHTML = `
+    <div class="accounts-popover-head">
+      <strong>${siblings.length} accounts</strong>
+      <button class="accounts-popover-close" aria-label="Close">✕</button>
+    </div>
+    <table class="accounts-popover-table">
+      <thead><tr><th>Account</th><th>Reg</th><th>Tier</th><th>Role</th><th>Games</th><th>CSS</th></tr></thead>
+      <tbody>
+        ${siblings.map(s => `
+          <tr data-puuid="${s.puuid}" style="cursor:pointer;">
+            <td><strong>${(s.summoner_name || '?').split('#')[0]}</strong><span class="muted" style="font-size:10px;">#${(s.summoner_name||'').split('#')[1] || ''}</span></td>
+            <td>${regionBadge(s.region)}</td>
+            <td>${tierBadge(s.tier, { size: 14 })} ${s.lp ?? ''}</td>
+            <td>${roleIcon(s.role, { size: 14 })}</td>
+            <td>${s.games_played}</td>
+            <td>${s.css_score != null ? `<span class="score-pill ${scoreClass(s.css_score)}" style="font-size:10px;padding:1px 6px;">${s.css_score}</span>` : '—'}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+  document.body.appendChild(pop);
+  // Position relative to the anchor
+  const r = anchor.getBoundingClientRect();
+  pop.style.position = 'absolute';
+  pop.style.top = (window.scrollY + r.bottom + 6) + 'px';
+  pop.style.left = (window.scrollX + r.left) + 'px';
+
+  pop.querySelector('.accounts-popover-close').addEventListener('click', () => pop.remove());
+  pop.querySelectorAll('tr[data-puuid]').forEach(tr =>
+    tr.addEventListener('click', () => {
+      window._selectedPuuid = tr.dataset.puuid;
+      pop.remove();
+      setView('player');
+    })
+  );
+  // Click outside → close
+  setTimeout(() => {
+    document.addEventListener('click', function onDoc(e) {
+      if (!pop.contains(e.target)) {
+        pop.remove();
+        document.removeEventListener('click', onDoc);
+      }
+    });
+  }, 0);
 }
 function initLeaderboard() {
   document.getElementById('f-apply').addEventListener('click', () => {
     _lbOffset = 0;  // reset to first page when filters change
+    loadLeaderboard();
+  });
+
+  // Account-grouping toggle (no backend call — pure post-fetch transform)
+  document.getElementById('lb-group-toggle')?.addEventListener('change', () => {
     loadLeaderboard();
   });
 

@@ -230,10 +230,17 @@ async function loadPlayer(puuid) {
     </div>
     <div id="tab-soloq" class="tab-pane">
 
-    <div class="card" id="css-history-card">
-      <h3>📈 CSS trend <span class="muted" style="font-size:11px;font-weight:400;">evolution across patches — line per role</span> <span id="css-history-delta" style="font-size:12px;font-weight:400;margin-left:8px;"></span></h3>
-      <div id="css-history-empty" class="muted" style="font-size:12px;display:none;"></div>
-      <canvas id="css-history-chart" height="180"></canvas>
+    <div class="grid-2">
+      <div class="card" id="css-history-card">
+        <h3>📈 CSS trend <span class="muted" style="font-size:11px;font-weight:400;">evolution across patches — line per role</span> <span id="css-history-delta" style="font-size:12px;font-weight:400;margin-left:8px;"></span></h3>
+        <div id="css-history-empty" class="muted" style="font-size:12px;display:none;"></div>
+        <canvas id="css-history-chart" height="180"></canvas>
+      </div>
+      <div class="card" id="activity-card">
+        <h3>🔥 Activity <span class="muted" style="font-size:11px;font-weight:400;">current streak + when they play (UTC)</span></h3>
+        <div id="activity-streak" style="margin-bottom:10px;"></div>
+        <div id="activity-heatmap"></div>
+      </div>
     </div>
 
     <div class="grid-2">
@@ -435,6 +442,7 @@ async function loadPlayer(puuid) {
 
   // CSS history (best-effort — silent fail if no snapshots yet)
   loadCssHistory(puuid).catch(() => {});
+  loadActivity(puuid).catch(() => {});
 
   // Notes
   loadNotes(puuid);
@@ -588,6 +596,65 @@ async function loadCssHistory(puuid) {
       deltaEl.innerHTML = `<span class="muted">stable on ${bestRole} (${bestPath})</span>`;
     }
   }
+}
+
+async function loadActivity(puuid) {
+  const card = document.getElementById('activity-card');
+  if (!card) return;
+  const streakEl = document.getElementById('activity-streak');
+  const heatEl = document.getElementById('activity-heatmap');
+
+  let data;
+  try {
+    data = await API('/players/' + puuid + '/activity');
+  } catch (e) {
+    streakEl.innerHTML = `<span class="muted">Failed: ${e.message}</span>`;
+    return;
+  }
+
+  if (!data.total_games) {
+    streakEl.innerHTML = '<span class="muted">No matches ingested yet.</span>';
+    return;
+  }
+
+  // --- Streak badge ---
+  const s = data.streak;
+  if (s.length >= 3) {
+    const isWin = s.type === 'W';
+    const cls = isWin ? 'streak-win' : 'streak-loss';
+    const verb = isWin ? 'win streak' : 'losing streak';
+    const intensity = s.length >= 7 ? '🔥🔥' : s.length >= 5 ? '🔥' : '';
+    streakEl.innerHTML = `<span class="streak-badge ${cls}">${s.length}${s.type} ${verb}</span> ${intensity}`;
+  } else if (s.type) {
+    streakEl.innerHTML = `<span class="muted" style="font-size:12px;">Last result: ${s.type === 'W' ? 'Win' : 'Loss'} (no notable streak)</span>`;
+  }
+
+  // --- Heatmap: 7 rows × 24 cols ---
+  // Find max for color scaling. Cells with 0 stay neutral.
+  let maxCount = 0;
+  for (const row of data.heatmap) for (const v of row) if (v > maxCount) maxCount = v;
+
+  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  // Hour labels: show every 3rd to keep compact
+  const hourLabels = Array.from({length: 24}, (_, h) => h % 3 === 0 ? h : '');
+
+  let html = `<div class="heatmap-wrap" title="Game count per (day × UTC hour). Darker = more games.">
+    <div class="heatmap-row heatmap-header">
+      <span class="heatmap-day"></span>
+      ${hourLabels.map(h => `<span class="heatmap-hour">${h === '' ? '' : h}</span>`).join('')}
+    </div>`;
+  data.heatmap.forEach((row, di) => {
+    html += `<div class="heatmap-row">`;
+    html += `<span class="heatmap-day">${days[di]}</span>`;
+    row.forEach((count, hi) => {
+      const intensity = maxCount ? count / maxCount : 0;
+      const bg = count === 0 ? 'transparent' : `rgba(110,168,255,${0.15 + 0.85 * intensity})`;
+      html += `<span class="heatmap-cell" style="background:${bg};" title="${days[di]} ${String(hi).padStart(2,'0')}:00 UTC — ${count} games"></span>`;
+    });
+    html += `</div>`;
+  });
+  html += `</div><div class="muted" style="font-size:10px;margin-top:4px;">Times in UTC · ${data.total_games} games total</div>`;
+  heatEl.innerHTML = html;
 }
 
 async function loadNotes(puuid) {

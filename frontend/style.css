@@ -1315,3 +1315,60 @@ body:has(.match-modal.open) { overflow: hidden; }
 @media (hover: none) and (pointer: coarse) {
   button, .star, nav a { min-height: 36px; }
 }
+
+/* ---------- Streak badge + activity heatmap ---------- */
+.streak-badge {
+  display: inline-block;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  box-shadow: 0 1px 0 rgba(255,255,255,0.18) inset, 0 2px 8px rgba(0,0,0,0.2);
+}
+.streak-badge.streak-win {
+  background: linear-gradient(135deg, #22d3a4 0%, #10b981 100%);
+  color: #04221a;
+}
+.streak-badge.streak-loss {
+  background: linear-gradient(135deg, #f87171 0%, #dc2626 100%);
+  color: #2a0606;
+}
+
+.heatmap-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10px;
+}
+.heatmap-row {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+}
+.heatmap-row.heatmap-header { color: var(--muted); font-size: 9px; }
+.heatmap-day {
+  width: 28px;
+  flex-shrink: 0;
+  color: var(--muted);
+  text-align: right;
+  padding-right: 4px;
+}
+.heatmap-hour {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+}
+.heatmap-cell {
+  flex: 1;
+  min-width: 0;
+  height: 14px;
+  border-radius: 2px;
+  background: rgba(110,168,255,0.06);
+  transition: transform 0.08s ease;
+}
+.heatmap-cell:hover {
+  transform: scale(1.4);
+  outline: 1px solid var(--accent);
+  z-index: 2;
+}

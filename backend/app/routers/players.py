@@ -152,6 +152,58 @@ def search_players(
     return [_serialize_player(p, db) for p in rows]
 
 
+@router.get("/{puuid}/activity")
+def player_activity(
+    puuid: str,
+    db: Session = Depends(get_db),
+):
+    """Behavioral signals computed on the fly from the match history.
+
+    Returns:
+      - `streak`: current consecutive W or L streak (walks back from the
+        most recent game and counts matching results until the first flip).
+      - `heatmap`: 7×24 grid of game counts (rows = Mon..Sun, cols = hours
+        in UTC). Reveals grind schedule (night-shift smurfs, KR pros
+        playing EUW at 4am, weekend warriors).
+      - `total_games`: how many we summed over.
+    """
+    p = db.get(Player, puuid)
+    if not p:
+        raise HTTPException(404, "player not found")
+
+    rows = (
+        db.query(MatchParticipant.win, Match.game_creation)
+        .join(Match, Match.match_id == MatchParticipant.match_id)
+        .filter(MatchParticipant.puuid == puuid)
+        .filter(Match.game_creation.isnot(None))
+        .order_by(desc(Match.game_creation))
+        .all()
+    )
+
+    streak = {"type": None, "length": 0}
+    if rows:
+        first_win = bool(rows[0].win)
+        streak = {"type": "W" if first_win else "L", "length": 1}
+        for r in rows[1:]:
+            if bool(r.win) == first_win:
+                streak["length"] += 1
+            else:
+                break
+
+    # Heatmap row order = ISO weekday (0=Mon, 6=Sun) so the frontend
+    # labels can be translated independently.
+    heatmap = [[0] * 24 for _ in range(7)]
+    for _win, ts in rows:
+        if ts:
+            heatmap[ts.weekday()][ts.hour] += 1
+
+    return {
+        "streak": streak,
+        "heatmap": heatmap,
+        "total_games": len(rows),
+    }
+
+
 @router.get("/{puuid}/history")
 def player_history(
     puuid: str,

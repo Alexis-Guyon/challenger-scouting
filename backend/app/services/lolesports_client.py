@@ -15,6 +15,7 @@ This API is NOT officially documented by Riot — use at your own risk and
 keep usage internal.
 """
 import asyncio
+import json as _json
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -31,6 +32,12 @@ USER_AGENT = "ChallengerScoutingBot/0.1 (internal)"
 RATE_DELAY = 0.25  # ~4 req/s — conservative
 
 
+class LolesportsNoData(Exception):
+    """Raised when the API returns 200 but the body is empty / non-JSON.
+    Treated by callers as 'no data for this game' (same as 404), not a
+    pipeline error."""
+
+
 class LolesportsClient:
     def __init__(self):
         self._client = httpx.AsyncClient(
@@ -45,6 +52,7 @@ class LolesportsClient:
     async def __aexit__(self, *_): await self.close()
 
     async def _get(self, url: str, params: dict | None = None) -> dict:
+        last_decode_preview = None
         for attempt in range(4):
             r = await self._client.get(url, params=params)
             if r.status_code == 429:
@@ -56,8 +64,36 @@ class LolesportsClient:
                 await asyncio.sleep(1 + attempt)
                 continue
             r.raise_for_status()
-            await asyncio.sleep(RATE_DELAY)
-            return r.json()
+
+            # 200 OK — but the body may still be non-JSON (CDN serving a
+            # cached HTML error page, empty body for stale games, etc.).
+            # Retry on decode failure with backoff: many of these clear up
+            # within 1-2s as the CDN cache expires.
+            text = r.text
+            if not text.strip():
+                # Truly empty body → treat as no data for this game.
+                await asyncio.sleep(RATE_DELAY)
+                raise LolesportsNoData(f"empty 200 body for {url}")
+            try:
+                payload = _json.loads(text)
+                await asyncio.sleep(RATE_DELAY)
+                return payload
+            except _json.JSONDecodeError as exc:
+                last_decode_preview = text[:200].replace("\n", " ")
+                wait = 1 + attempt
+                logger.warning(
+                    "lolesports JSON decode failed (attempt %d/4) for %s: %s — body preview: %s",
+                    attempt + 1, url, exc, last_decode_preview,
+                )
+                await asyncio.sleep(wait)
+                continue
+        # Exhausted retries on JSONDecodeError → treat as no-data
+        # rather than crashing the whole league sync. The caller
+        # categorizes this as a soft skip.
+        if last_decode_preview is not None:
+            raise LolesportsNoData(
+                f"non-JSON 200 body after 4 retries for {url}: {last_decode_preview!r}"
+            )
         raise RuntimeError(f"lolesports unreachable: {url}")
 
     # ----- esports-api -----
@@ -93,6 +129,11 @@ class LolesportsClient:
         """
         Returns 10s-interval frame data. starting_time is ISO8601 (game start, rounded to 10s).
         If omitted, we fetch the latest available window.
+
+        Returns None when:
+          - HTTP 404: this game has no livestats data on the feed
+          - LolesportsNoData: 200 with empty/non-JSON body (after 4 retries)
+        Both cases mean "no frame data available for this game" — same handling.
         """
         params = {}
         if starting_time:
@@ -103,6 +144,8 @@ class LolesportsClient:
             if e.response.status_code == 404:
                 return None
             raise
+        except LolesportsNoData:
+            return None
 
     async def get_details(self, game_id: str, starting_time: Optional[str] = None,
                           participant_ids: Optional[list[int]] = None) -> dict | None:
@@ -117,6 +160,8 @@ class LolesportsClient:
             if e.response.status_code == 404:
                 return None
             raise
+        except LolesportsNoData:
+            return None
 
 
 def round_to_10s_iso(dt: datetime) -> str:

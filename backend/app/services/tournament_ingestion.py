@@ -440,9 +440,18 @@ async def ingest_league(client: LolesportsClient, db: Session, league: dict, max
         try:
             details_event = await client.get_event_details(match_id)
         except Exception as exc:
+            # Soft-skip: count the failure with a clean reason instead of
+            # propagating up to the generic catch-all. Helps the operator
+            # see WHICH endpoint failed in skip_reasons.
+            from .lolesports_client import LolesportsNoData
+            reason = "no_event_details" if isinstance(exc, LolesportsNoData) else f"event_details_exception:{type(exc).__name__}"
+            skipped += 1
+            skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
             logger.warning("eventDetails %s failed: %s", match_id, exc)
             continue
         if not details_event:
+            skipped += 1
+            skip_reasons["no_event_details"] = skip_reasons.get("no_event_details", 0) + 1
             continue
         games = ((details_event.get("match") or {}).get("games") or [])
 

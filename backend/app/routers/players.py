@@ -717,6 +717,33 @@ def list_players(
         q = q.filter(Player.summoner_name != "")
         q = q.filter(Player.summoner_name.like("%#%"))
 
+    # Riot-ID dedup: when a Riot ID change creates two Player rows with
+    # the same (region, summoner_name) but different puuids, keep ONLY
+    # the puuid with the MOST scoutable data (highest rank_val from the
+    # `primary` subquery — i.e. games_played * 1M + id). The naive
+    # "most-recently-updated" heuristic kept smurf/freshly-renamed accounts
+    # with 8 games and dropped the real player with 32 games + CSS 64.
+    # Reported case: KR `Departures#Kami` (32 games on the old puuid,
+    # 8 games scattered across roles on the new one — the old wins).
+    _best_puuid_per_name = (
+        db.query(
+            Player.region.label("region"),
+            Player.summoner_name.label("summoner_name"),
+            _func.max(primary.c.rank_val).label("max_rank"),
+        )
+        .join(primary, primary.c.puuid == Player.puuid)
+        .filter(Player.summoner_name.isnot(None))
+        .filter(Player.summoner_name.like("%#%"))
+        .group_by(Player.region, Player.summoner_name)
+        .subquery()
+    )
+    q = q.join(
+        _best_puuid_per_name,
+        (_best_puuid_per_name.c.region == Player.region)
+        & (_best_puuid_per_name.c.summoner_name == Player.summoner_name)
+        & (_best_puuid_per_name.c.max_rank == primary.c.rank_val),
+    )
+
     # Require an actual ranked SoloQ tier on file. Without this, players we
     # ingested but never got a rank snapshot for (account de-ranked / new
     # account / API hiccup) sneak onto the Challenger ladder with empty

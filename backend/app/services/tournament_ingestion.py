@@ -174,6 +174,22 @@ async def _ingest_one_game(client: LolesportsClient, db: Session,
         return False, "no_window_data"
 
     last = _final_state(window)
+
+    # Reject "ghost games" — when the end-probe at +120min returns nothing
+    # AND the no-arg fallback returns the FIRST 10 frames (game state at
+    # 0:00 to 0:10), all stats are 0. Persisting these would pollute the
+    # team summary with zero K/D/A/CS/Gold rows. Detect by summing every
+    # participant stat in the last frame: if total = 0 across all 10
+    # players, the data is unusable.
+    _zero_check = 0
+    for p in last["by_pid"].values():
+        _zero_check += (
+            (p.get("kills") or 0) + (p.get("deaths") or 0) + (p.get("assists") or 0)
+            + (p.get("creepScore") or 0)
+            + max(0, (p.get("totalGold") or 0) - 500)  # subtract starting gold
+        )
+    if _zero_check == 0:
+        return False, "ghost_game_zero_stats"
     # The last window only spans 100 s; estimate full game duration from the
     # rfc460Timestamp of the last frame minus broadcast startTime (less ~3 min
     # for draft + load). Bounded to [15 min, 80 min] to filter outliers.

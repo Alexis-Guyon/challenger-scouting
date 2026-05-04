@@ -58,6 +58,7 @@
       <a href="#" data-view="leaderboard" class="active">Ladder</a>
       <a href="#" data-view="watchlist">Watchlist</a>
       <a href="#" data-view="champions">Champions</a>
+      <a href="#" data-view="patch">📊 Patch</a>
       <a href="#" data-view="player">Player</a>
       <a href="#" data-view="compare">Compare</a>
       <a href="#" data-view="alerts">Alerts</a>
@@ -293,6 +294,61 @@
       <div id="p-suggest" class="suggest"></div>
     </div>
     <div id="p-content"></div>
+  </section>
+</template>
+
+<template id="tpl-patch">
+  <section class="view">
+    <div class="card">
+      <h3>📊 Patch impact</h3>
+      <p class="muted" style="margin-top:0;font-size:12px;">Who profited (or got nerfed) between two patches? CSS delta on the same role across snapshots. Default: latest patch vs the one before.</p>
+      <div class="filters" style="margin-top:8px;">
+        <label>Patch from
+          <select id="pi-from"><option value="">loading…</option></select>
+        </label>
+        <label>Patch to
+          <select id="pi-to"><option value="">loading…</option></select>
+        </label>
+        <label>Role
+          <select id="pi-role">
+            <option value="">All</option>
+            <option value="TOP">TOP</option>
+            <option value="JGL">JGL</option>
+            <option value="MID">MID</option>
+            <option value="ADC">ADC</option>
+            <option value="SUP">SUP</option>
+          </select>
+        </label>
+        <label>Min games per patch
+          <input id="pi-min" type="number" value="10" min="1" max="50"/>
+        </label>
+        <label>Max rows
+          <input id="pi-limit" type="number" value="100" min="10" max="500"/>
+        </label>
+        <button id="pi-apply">Apply</button>
+      </div>
+      <div id="pi-summary" class="muted" style="font-size:12px;margin-top:8px;"></div>
+      <div class="table-wrap" style="margin-top:10px;">
+        <table id="pi-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Player</th>
+              <th>Reg</th>
+              <th>Pro</th>
+              <th>Role</th>
+              <th>Tier</th>
+              <th>CSS (from)</th>
+              <th>CSS (to)</th>
+              <th title="Δ CSS — green = gained, red = lost">Δ</th>
+              <th title="Games on each patch (from / to)">Games</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
   </section>
 </template>
 

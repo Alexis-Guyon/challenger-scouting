@@ -152,6 +152,117 @@ def search_players(
     return [_serialize_player(p, db) for p in rows]
 
 
+@router.get("/patch-impact")
+def patch_impact(
+    patch_to: str = Query(..., description="Newer patch (e.g. 16.9)"),
+    patch_from: str = Query(..., description="Older patch (e.g. 16.8)"),
+    role: str | None = Query(default=None, description="TOP/JGL/MID/ADC/SUP"),
+    min_games_each: int = Query(default=10, ge=1, description="Min games on EACH patch"),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """For each player who has CSS snapshots on BOTH patches, return the
+    delta CSS_to - CSS_from. Sorted by biggest gainers first.
+
+    Powers the "who profited from the patch?" view — the single most-asked
+    scout question after every meta rotation.
+    """
+    role_norm = role.upper() if role else None
+
+    # Fetch matching snapshots for both patches in one query each
+    def _snapshots(patch: str):
+        q = db.query(CSSSnapshot).filter(
+            CSSSnapshot.patch == patch,
+            CSSSnapshot.games_played >= min_games_each,
+            CSSSnapshot.css_score.isnot(None),
+        )
+        if role_norm:
+            q = q.filter(CSSSnapshot.role == role_norm)
+        # Dedupe to latest snapshot per (puuid, role) — same logic as
+        # /players/{puuid}/history. We may have multiple snapshot_at
+        # timestamps for the same patch (e.g. two ingestion passes).
+        return q.order_by(CSSSnapshot.snapshot_at.asc()).all()
+
+    snaps_from = _snapshots(patch_from)
+    snaps_to = _snapshots(patch_to)
+    if not snaps_from or not snaps_to:
+        return {
+            "patch_from": patch_from, "patch_to": patch_to, "role": role_norm,
+            "rows": [],
+            "warning": f"Need data on both patches; have {len(snaps_from)} on {patch_from}, {len(snaps_to)} on {patch_to}",
+        }
+
+    # Build (puuid, role) → latest snapshot. Latest wins per (puuid, role, patch).
+    def _index(snaps):
+        idx: dict[tuple, CSSSnapshot] = {}
+        for s in snaps:
+            key = (s.puuid, s.role)
+            prev = idx.get(key)
+            if not prev or (s.snapshot_at and prev.snapshot_at and s.snapshot_at > prev.snapshot_at):
+                idx[key] = s
+        return idx
+
+    idx_from = _index(snaps_from)
+    idx_to = _index(snaps_to)
+
+    # Pull player names for the union of puuids in idx_to (one query)
+    puuids_in_both = {key[0] for key in idx_to.keys() if key in idx_from}
+    if not puuids_in_both:
+        return {
+            "patch_from": patch_from, "patch_to": patch_to, "role": role_norm,
+            "rows": [],
+            "warning": "No players have ranked snapshots on both patches.",
+        }
+    players_by_puuid = {p.puuid: p for p in db.query(Player).filter(Player.puuid.in_(puuids_in_both)).all()}
+    metas_by_puuid = {m.puuid: m for m in db.query(PlayerMeta).filter(PlayerMeta.puuid.in_(puuids_in_both)).all()}
+    latest_ranks_by_puuid = {}
+    for r in (
+        db.query(RankSnapshot)
+        .filter(RankSnapshot.puuid.in_(puuids_in_both))
+        .order_by(desc(RankSnapshot.snapshot_date))
+        .all()
+    ):
+        latest_ranks_by_puuid.setdefault(r.puuid, r)  # first wins (latest because of order)
+
+    rows = []
+    for (puuid, snap_role), s_to in idx_to.items():
+        s_from = idx_from.get((puuid, snap_role))
+        if not s_from:
+            continue
+        p = players_by_puuid.get(puuid)
+        if not p:
+            continue
+        meta = metas_by_puuid.get(puuid)
+        rk = latest_ranks_by_puuid.get(puuid)
+        delta = (s_to.css_score or 0) - (s_from.css_score or 0)
+        rows.append({
+            "puuid": puuid,
+            "summoner_name": p.summoner_name,
+            "region": p.region,
+            "role": snap_role,
+            "tier": rk.tier if rk else None,
+            "lp": rk.lp if rk else None,
+            "is_pro": bool(meta and meta.is_pro),
+            "team": meta.current_team_tag if meta else None,
+            "css_from": round(s_from.css_score, 1),
+            "css_to": round(s_to.css_score, 1),
+            "delta": round(delta, 1),
+            "games_from": s_from.games_played,
+            "games_to": s_to.games_played,
+        })
+
+    rows.sort(key=lambda r: -r["delta"])
+    return {
+        "patch_from": patch_from,
+        "patch_to": patch_to,
+        "role": role_norm,
+        "min_games_each": min_games_each,
+        "rows": rows[:limit],
+        "total_matched": len(rows),
+    }
+
+
 @router.get("/{puuid}/activity")
 def player_activity(
     puuid: str,

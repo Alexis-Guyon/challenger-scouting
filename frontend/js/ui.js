@@ -139,6 +139,7 @@ function setView(name) {
   if (name === 'leaderboard') initLeaderboard();
   if (name === 'watchlist') initWatchlist();
   if (name === 'champions') initChampions();
+  if (name === 'patch') initPatchImpact();
   if (name === 'player') initPlayer();
   if (name === 'compare') initCompare();
   if (name === 'alerts') initAlerts();

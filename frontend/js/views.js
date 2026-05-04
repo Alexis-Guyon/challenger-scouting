@@ -236,6 +236,123 @@ async function loadWatchlist() {
   );
 }
 function initWatchlist() { loadWatchlist(); }
+
+/* ---------------- PATCH IMPACT ---------------- */
+async function initPatchImpact() {
+  const fromSel = document.getElementById('pi-from');
+  const toSel = document.getElementById('pi-to');
+
+  // Fetch the list of available patches by sampling /admin/stats? Actually
+  // simpler: hit a dummy patch-impact request with no filter to discover
+  // patches via 422 error. Better: list distinct patches from /champions
+  // (which already runs distinct queries). Best: we need a small listing
+  // endpoint. For MVP, populate with the most likely patches by guessing
+  // the current major + 5 minors below. The server validates anyway.
+  // Try a quick discovery via the leaderboard (which surfaces patches as
+  // a side effect of its sort).
+  let patches = [];
+  try {
+    const probe = await API('/players?limit=1&sort=games');
+    if (probe.items?.length) {
+      // First item's patch is the most-played. Build descending guesses.
+      const cur = probe.items[0].patch || '';
+      patches = [cur];
+      // Walk back 5 patches by decrementing the minor number
+      const m = cur.match(/^(\d+)\.(\d+)/);
+      if (m) {
+        const major = parseInt(m[1]);
+        let minor = parseInt(m[2]) - 1;
+        while (patches.length < 6 && minor >= 0) {
+          patches.push(`${major}.${minor}`);
+          minor--;
+        }
+      }
+    }
+  } catch {}
+  if (!patches.length) patches = ['16.9', '16.8', '16.7', '16.6'];
+
+  const opts = patches.map(p => `<option value="${p}">${p}</option>`).join('');
+  fromSel.innerHTML = opts;
+  toSel.innerHTML = opts;
+  // Default: to = patches[0] (most recent), from = patches[1]
+  toSel.value = patches[0];
+  fromSel.value = patches[1] || patches[0];
+
+  document.getElementById('pi-apply').addEventListener('click', loadPatchImpact);
+  loadPatchImpact();
+}
+
+async function loadPatchImpact() {
+  const fromP = document.getElementById('pi-from').value;
+  const toP = document.getElementById('pi-to').value;
+  const role = document.getElementById('pi-role').value;
+  const minG = document.getElementById('pi-min').value || 10;
+  const lim = document.getElementById('pi-limit').value || 100;
+  const summary = document.getElementById('pi-summary');
+  const tbody = document.querySelector('#pi-table tbody');
+
+  if (!fromP || !toP || fromP === toP) {
+    summary.textContent = 'Pick two different patches.';
+    tbody.innerHTML = '';
+    return;
+  }
+  summary.textContent = 'Loading…';
+  tbody.innerHTML = '';
+
+  const params = new URLSearchParams({
+    patch_from: fromP, patch_to: toP,
+    min_games_each: minG, limit: lim,
+  });
+  if (role) params.set('role', role);
+
+  let data;
+  try {
+    data = await API('/players/patch-impact?' + params);
+  } catch (e) {
+    summary.innerHTML = `<span style="color:var(--danger);">Failed: ${e.message}</span>`;
+    return;
+  }
+
+  if (data.warning) {
+    summary.innerHTML = `<span style="color:var(--warn);">${data.warning}</span>`;
+    return;
+  }
+
+  const rows = data.rows || [];
+  summary.innerHTML = `${data.total_matched} player(s) with snapshots on both <strong>${fromP}</strong> and <strong>${toP}</strong> · showing top ${rows.length} by Δ CSS · min ${minG} games per patch`;
+
+  await refreshWatchedSet();
+
+  tbody.innerHTML = rows.map((r, i) => {
+    const deltaCls = r.delta >= 5 ? 'delta-pos' : r.delta <= -5 ? 'delta-neg' : 'muted';
+    const sign = r.delta > 0 ? '+' : '';
+    const proCell = r.is_pro ? `<span class="role-tag" style="background:rgba(34,211,164,0.12);color:#22d3a4;">${r.team || 'PRO'}</span>` : '<span class="muted">—</span>';
+    return `
+      <tr style="cursor:pointer;" data-puuid="${r.puuid}">
+        <td>${i + 1}</td>
+        <td><strong>${r.summoner_name}</strong></td>
+        <td>${regionBadge(r.region)}</td>
+        <td>${proCell}</td>
+        <td>${roleIcon(r.role, { size: 16 })}</td>
+        <td>${tierBadge(r.tier)} ${r.lp != null ? r.lp + ' LP' : ''}</td>
+        <td>${r.css_from}</td>
+        <td>${r.css_to}</td>
+        <td class="${deltaCls}"><strong>${sign}${r.delta}</strong></td>
+        <td class="muted" style="font-size:11px;">${r.games_from} / ${r.games_to}</td>
+        <td><button class="secondary view-pi" data-puuid="${r.puuid}">View</button></td>
+      </tr>
+    `;
+  }).join('') || '<tr><td colspan="11" class="muted" style="text-align:center;padding:24px;">No matched players.</td></tr>';
+
+  // Click anywhere on the row → open profile (sticky View column too)
+  tbody.querySelectorAll('tr[data-puuid]').forEach(tr => {
+    tr.addEventListener('click', () => {
+      window._selectedPuuid = tr.dataset.puuid;
+      setView('player');
+    });
+  });
+}
+
 /* ---------------- CHAMPIONS ---------------- */
 let _champRaw = [];
 

@@ -61,6 +61,9 @@ NEW_COLUMNS = [
     ("player_meta", "instagram_handle", "VARCHAR"),
     ("player_meta", "youtube_url", "VARCHAR"),
     ("player_meta", "tiktok_handle", "VARCHAR"),
+    # Recruitment kanban — pipeline stage on each watchlist entry
+    ("watchlist", "stage", "VARCHAR DEFAULT 'watch'"),
+    ("watchlist", "stage_changed_at", "DATETIME"),
 ]
 
 

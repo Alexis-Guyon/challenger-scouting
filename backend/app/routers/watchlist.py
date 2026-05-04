@@ -10,6 +10,10 @@ from ..models import Player, PlayerAggregate, RankSnapshot, ScoutNote, User, Wat
 
 router = APIRouter(tags=["watchlist"], dependencies=[Depends(get_current_user)])
 
+# Recruitment kanban — canonical stage values + lightweight validation.
+# Frontend renders one column per value, in this order.
+KANBAN_STAGES = ("watch", "contacted", "trial", "offer", "signed", "rejected")
+
 
 @router.get("/watchlist")
 def list_watchlist(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -38,6 +42,8 @@ def list_watchlist(user: User = Depends(get_current_user), db: Session = Depends
             "puuid": p.puuid,
             "summoner_name": p.summoner_name,
             "tag": w.tag,
+            "stage": w.stage or "watch",
+            "stage_changed_at": w.stage_changed_at.isoformat() if w.stage_changed_at else None,
             "added_at": w.added_at.isoformat() if w.added_at else None,
             "tier": rank.tier if rank else None,
             "lp": rank.lp if rank else None,
@@ -47,6 +53,26 @@ def list_watchlist(user: User = Depends(get_current_user), db: Session = Depends
             "games_played": agg.games_played if agg else 0,
         })
     return out
+
+
+@router.patch("/watchlist/{puuid}/stage")
+def set_watchlist_stage(
+    puuid: str,
+    stage: str = Form(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Move a watchlist entry to a kanban stage."""
+    if stage not in KANBAN_STAGES:
+        raise HTTPException(400, f"unknown stage {stage!r}; expected one of {KANBAN_STAGES}")
+    w = db.query(WatchlistEntry).filter_by(user_id=user.id, puuid=puuid).first()
+    if not w:
+        raise HTTPException(404, "watchlist entry not found")
+    if w.stage != stage:
+        w.stage = stage
+        w.stage_changed_at = datetime.now(timezone.utc)
+        db.commit()
+    return {"ok": True, "puuid": puuid, "stage": stage}
 
 
 @router.post("/watchlist")

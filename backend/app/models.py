@@ -329,6 +329,10 @@ class WatchlistEntry(Base):
     puuid = Column(String, ForeignKey("players.puuid"), index=True)
     tag = Column(String, default="")  # free text: "ADC FA target", "EU U21", ...
     added_at = Column(DateTime)
+    # Recruitment kanban stage. Default = "watch" (initial scouting).
+    # Other stages: contacted, trial, offer, signed, rejected.
+    stage = Column(String, default="watch", index=True)
+    stage_changed_at = Column(DateTime)  # tracks how long the entry has been in current stage
 
     __table_args__ = (
         UniqueConstraint("user_id", "puuid", name="uq_watch_user_puuid"),

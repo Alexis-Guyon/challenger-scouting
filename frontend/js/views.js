@@ -191,51 +191,184 @@ function initLeaderboard() {
   loadLeaderboard();
 }
 
-/* ---------------- WATCHLIST ---------------- */
+/* ---------------- WATCHLIST / KANBAN ---------------- */
+const KANBAN_STAGES = [
+  { id: 'watch',     label: '👀 Watching',  color: '#5b8def' },
+  { id: 'contacted', label: '✉ Contacted',  color: '#a78bfa' },
+  { id: 'trial',     label: '🎯 Trial',      color: '#f5a524' },
+  { id: 'offer',     label: '📝 Offer',      color: '#22d3a4' },
+  { id: 'signed',    label: '✅ Signed',     color: '#10b981' },
+  { id: 'rejected',  label: '✖ Pass',        color: '#7a818f' },
+];
+
 async function loadWatchlist() {
   const data = await API('/watchlist');
+  const board = document.getElementById('wl-kanban');
   const tbody = document.querySelector('#wl-table tbody');
-  tbody.innerHTML = '';
+  if (!board || !tbody) return;
+
+  // ---- Empty state ----
   if (!data.length) {
-    tbody.innerHTML = `<tr><td colspan="10" class="muted" style="text-align:center;padding:30px;">No players watched yet. Go to <a href="#" id="lb-link">Ladder</a> and click ☆ next to a name.</td></tr>`;
+    board.innerHTML = `<p class="muted" style="text-align:center;padding:30px;">No players watched yet. Go to <a href="#" id="lb-link">Ladder</a> and click ☆ next to a name.</p>`;
+    tbody.innerHTML = '';
     document.getElementById('lb-link')?.addEventListener('click', e => { e.preventDefault(); setView('leaderboard'); });
     return;
   }
-  data.forEach(row => {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
+
+  // ---- Group by stage ----
+  const byStage = Object.fromEntries(KANBAN_STAGES.map(s => [s.id, []]));
+  data.forEach(r => {
+    const stage = (byStage[r.stage] !== undefined) ? r.stage : 'watch';
+    byStage[stage].push(r);
+  });
+
+  // ---- Render kanban columns ----
+  board.innerHTML = KANBAN_STAGES.map(s => `
+    <div class="kanban-col" data-stage="${s.id}">
+      <div class="kanban-col-head" style="border-top-color:${s.color};">
+        <span class="kanban-col-label">${s.label}</span>
+        <span class="kanban-col-count">${byStage[s.id].length}</span>
+      </div>
+      <div class="kanban-col-body" data-stage="${s.id}">
+        ${byStage[s.id].map(r => kanbanCard(r)).join('')}
+      </div>
+    </div>
+  `).join('');
+
+  // Drag-and-drop wiring
+  board.querySelectorAll('.kanban-card').forEach(card => {
+    card.addEventListener('dragstart', e => {
+      card.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', card.dataset.puuid);
+    });
+    card.addEventListener('dragend', () => card.classList.remove('dragging'));
+    // Click anywhere on card → open profile (but not when dragging)
+    card.addEventListener('click', e => {
+      if (e.target.closest('.kanban-remove')) return;
+      window._selectedPuuid = card.dataset.puuid;
+      setView('player');
+    });
+  });
+  board.querySelectorAll('.kanban-col-body').forEach(col => {
+    col.addEventListener('dragover', e => { e.preventDefault(); col.classList.add('drag-over'); });
+    col.addEventListener('dragleave', () => col.classList.remove('drag-over'));
+    col.addEventListener('drop', async e => {
+      e.preventDefault();
+      col.classList.remove('drag-over');
+      const puuid = e.dataTransfer.getData('text/plain');
+      const newStage = col.dataset.stage;
+      const card = board.querySelector(`.kanban-card[data-puuid="${puuid}"]`);
+      if (!card || card.parentElement === col) return;
+      // Optimistic move
+      col.appendChild(card);
+      // Update header counts
+      KANBAN_STAGES.forEach(s => {
+        const c = board.querySelector(`.kanban-col[data-stage="${s.id}"] .kanban-col-count`);
+        if (c) c.textContent = board.querySelector(`.kanban-col-body[data-stage="${s.id}"]`).children.length;
+      });
+      try {
+        const fd = new URLSearchParams(); fd.append('stage', newStage);
+        const resp = await fetch(API_BASE + '/watchlist/' + puuid + '/stage', {
+          method: 'PATCH', body: fd,
+          headers: { 'Authorization': 'Bearer ' + getToken() },
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      } catch (err) {
+        alert('Failed to update stage: ' + err.message);
+        loadWatchlist();  // resync from server
+      }
+    });
+  });
+  board.querySelectorAll('.kanban-remove').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const puuid = btn.dataset.puuid;
+      if (!confirm('Remove this player from your watchlist?')) return;
+      await fetch(API_BASE + '/watchlist/' + puuid, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + getToken() } });
+      loadWatchlist();
+    });
+  });
+
+  // ---- Render table fallback (toggle) ----
+  tbody.innerHTML = data.map(row => `
+    <tr>
       <td><strong>${row.summoner_name || '(unknown)'}</strong></td>
       <td>${tierBadge(row.tier)}</td>
       <td>${row.lp ?? '—'}</td>
-      <td>${roleIcon(row.meta?.lp_role || row.role)}</td>
+      <td>${roleIcon(row.role)}</td>
       <td>${row.games_played}</td>
       <td>${row.css_score!==null ? `<span class="score-pill ${scoreClass(row.css_score)}">${row.css_score}</span>` : '—'}</td>
       <td>${row.percentile_rank ?? '—'}</td>
+      <td><span class="kanban-stage-pill" style="background:${(KANBAN_STAGES.find(s=>s.id===row.stage)||{}).color || '#7a818f'};">${(KANBAN_STAGES.find(s=>s.id===row.stage)||{}).label || row.stage}</span></td>
       <td><input class="tag-input" data-puuid="${row.puuid}" value="${(row.tag||'').replace(/"/g,'&quot;')}" placeholder="add tag…"/></td>
       <td>${row.added_at ? new Date(row.added_at).toLocaleDateString() : '—'}</td>
       <td>
         <button data-puuid="${row.puuid}" class="secondary view-wl">View</button>
         <button data-puuid="${row.puuid}" class="secondary remove-wl" title="Remove from watchlist">✕</button>
       </td>
-    `;
-    tbody.appendChild(tr);
-  });
-  document.querySelectorAll('.view-wl').forEach(b =>
+    </tr>
+  `).join('');
+  tbody.querySelectorAll('.view-wl').forEach(b =>
     b.addEventListener('click', () => { window._selectedPuuid = b.dataset.puuid; setView('player'); })
   );
-  document.querySelectorAll('.remove-wl').forEach(b =>
+  tbody.querySelectorAll('.remove-wl').forEach(b =>
     b.addEventListener('click', async () => {
       await fetch(API_BASE + '/watchlist/' + b.dataset.puuid, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + getToken() } });
       loadWatchlist();
     })
   );
-  document.querySelectorAll('.tag-input').forEach(i =>
+  tbody.querySelectorAll('.tag-input').forEach(i =>
     i.addEventListener('change', async () => {
       await APIform('/watchlist', { puuid: i.dataset.puuid, tag: i.value });
     })
   );
 }
-function initWatchlist() { loadWatchlist(); }
+
+function kanbanCard(r) {
+  const cssBadge = r.css_score != null
+    ? `<span class="score-pill ${scoreClass(r.css_score)}" style="font-size:10px;padding:2px 6px;">${r.css_score}</span>`
+    : '<span class="muted" style="font-size:10px;">—</span>';
+  const since = r.stage_changed_at
+    ? Math.max(0, Math.floor((Date.now() - new Date(r.stage_changed_at).getTime()) / (1000*60*60*24)))
+    : null;
+  const sinceLabel = since != null ? `${since}d` : '';
+  return `
+    <div class="kanban-card" draggable="true" data-puuid="${r.puuid}" title="Drag to move stage · click to open profile">
+      <div class="kanban-card-head">
+        <strong class="kanban-card-name">${(r.summoner_name || '?').split('#')[0]}</strong>
+        <button class="kanban-remove" data-puuid="${r.puuid}" title="Remove">✕</button>
+      </div>
+      <div class="kanban-card-meta">
+        ${roleIcon(r.role, { size: 14 })}
+        ${tierBadge(r.tier, { size: 14 })}
+        ${r.lp != null ? `<span class="muted" style="font-size:10px;">${r.lp} LP</span>` : ''}
+        ${cssBadge}
+      </div>
+      ${r.tag ? `<div class="kanban-card-tag">${r.tag}</div>` : ''}
+      ${sinceLabel ? `<div class="kanban-card-since muted">${sinceLabel} in stage</div>` : ''}
+    </div>
+  `;
+}
+
+function initWatchlist() {
+  loadWatchlist();
+  // View toggle (kanban / table)
+  const board = document.getElementById('wl-kanban');
+  const tableWrap = document.getElementById('wl-table-wrap');
+  const btnK = document.getElementById('wl-view-kanban');
+  const btnT = document.getElementById('wl-view-table');
+  if (btnK && btnT) {
+    btnK.addEventListener('click', () => {
+      btnK.classList.add('active'); btnT.classList.remove('active');
+      board.style.display = ''; tableWrap.style.display = 'none';
+    });
+    btnT.addEventListener('click', () => {
+      btnT.classList.add('active'); btnK.classList.remove('active');
+      board.style.display = 'none'; tableWrap.style.display = '';
+    });
+  }
+}
 
 /* ---------------- TEAM PAGE ---------------- */
 async function initTeam(code) {

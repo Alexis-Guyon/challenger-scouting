@@ -235,14 +235,25 @@
 <template id="tpl-watchlist">
   <section class="view">
     <div class="card">
-      <h3>Your watchlist</h3>
-      <p class="muted" style="margin-top:0;">Players you've tagged for follow-up.</p>
-      <div class="table-wrap">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <div>
+          <h3 style="margin:0;">Recruitment pipeline</h3>
+          <p class="muted" style="margin:2px 0 0;font-size:12px;">Drag players between stages. Each card is a watched prospect — click to open the profile.</p>
+        </div>
+        <div style="display:flex;gap:6px;">
+          <button id="wl-view-kanban" class="quick-pill active" data-mode="kanban">📋 Kanban</button>
+          <button id="wl-view-table"  class="quick-pill" data-mode="table">📊 Table</button>
+        </div>
+      </div>
+
+      <div id="wl-kanban" class="kanban-board" style="margin-top:14px;"></div>
+
+      <div id="wl-table-wrap" class="table-wrap" style="display:none;">
         <table id="wl-table">
           <thead>
             <tr>
               <th>Summoner</th><th>Tier</th><th>LP</th><th>Role</th>
-              <th>Games</th><th>CSS</th><th>%ile</th><th>Tag</th><th>Added</th><th></th>
+              <th>Games</th><th>CSS</th><th>%ile</th><th>Stage</th><th>Tag</th><th>Added</th><th></th>
             </tr>
           </thead>
           <tbody></tbody>

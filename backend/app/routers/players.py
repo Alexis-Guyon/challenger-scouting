@@ -152,6 +152,66 @@ def search_players(
     return [_serialize_player(p, db) for p in rows]
 
 
+@router.get("/patches")
+def list_patches(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """List patches we have aggregate data for, ordered by most-recent
+    activity (max Match.game_creation desc).
+
+    Naive string-sort breaks the moment Riot ships a 2-digit minor — e.g.
+    "16.10" sorts BEFORE "16.9" lexicographically. Sorting by the latest
+    `match.game_creation` per patch sidesteps the parsing problem
+    entirely: whichever patch had the most recent game played is the
+    current one, regardless of its label.
+
+    Powers the Patch Impact view's dropdowns and any other UI that needs
+    "what's the current patch?". Refreshes automatically after every
+    ingest — no env var to bump.
+    """
+    from sqlalchemy import func as _func
+    rows = (
+        db.query(
+            PlayerAggregate.patch.label("patch"),
+            _func.count(PlayerAggregate.id).label("aggregate_count"),
+            _func.count(_func.distinct(PlayerAggregate.puuid)).label("player_count"),
+        )
+        .filter(PlayerAggregate.patch.isnot(None))
+        .filter(PlayerAggregate.patch != "")
+        .group_by(PlayerAggregate.patch)
+        .all()
+    )
+    if not rows:
+        return []
+
+    # Per-patch latest match date — drives the ordering. Without a match
+    # row for a patch, we fall back to "no date" → sorted to the bottom.
+    latest_match = {
+        patch: ts for patch, ts in (
+            db.query(Match.patch, _func.max(Match.game_creation))
+            .filter(Match.patch.isnot(None))
+            .filter(Match.patch != "")
+            .group_by(Match.patch)
+            .all()
+        )
+    }
+
+    out = [
+        {
+            "patch": r.patch,
+            "aggregate_count": r.aggregate_count,
+            "player_count": r.player_count,
+            "latest_match_at": latest_match.get(r.patch).isoformat() if latest_match.get(r.patch) else None,
+        }
+        for r in rows
+    ]
+    # Newest activity first. Patches with no match-date evidence go last
+    # but stay in the response so the frontend can still render them.
+    out.sort(key=lambda x: x["latest_match_at"] or "", reverse=True)
+    return out
+
+
 @router.get("/patch-impact")
 def patch_impact(
     patch_to: str = Query(..., description="Newer patch (e.g. 16.9)"),

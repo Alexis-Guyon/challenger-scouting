@@ -597,41 +597,30 @@ async function initPatchImpact() {
   const fromSel = document.getElementById('pi-from');
   const toSel = document.getElementById('pi-to');
 
-  // Fetch the list of available patches by sampling /admin/stats? Actually
-  // simpler: hit a dummy patch-impact request with no filter to discover
-  // patches via 422 error. Better: list distinct patches from /champions
-  // (which already runs distinct queries). Best: we need a small listing
-  // endpoint. For MVP, populate with the most likely patches by guessing
-  // the current major + 5 minors below. The server validates anyway.
-  // Try a quick discovery via the leaderboard (which surfaces patches as
-  // a side effect of its sort).
+  // /players/patches returns the list ordered by the most recent
+  // Match.game_creation per patch — handles "16.10" > "16.9" cleanly
+  // (string-sort would give the wrong answer) and updates itself the
+  // instant a fresh ingest brings in games on a new patch. Each entry
+  // also carries player_count + aggregate_count for the dropdown label.
   let patches = [];
   try {
-    const probe = await API('/players?limit=1&sort=games');
-    if (probe.items?.length) {
-      // First item's patch is the most-played. Build descending guesses.
-      const cur = probe.items[0].patch || '';
-      patches = [cur];
-      // Walk back 5 patches by decrementing the minor number
-      const m = cur.match(/^(\d+)\.(\d+)/);
-      if (m) {
-        const major = parseInt(m[1]);
-        let minor = parseInt(m[2]) - 1;
-        while (patches.length < 6 && minor >= 0) {
-          patches.push(`${major}.${minor}`);
-          minor--;
-        }
-      }
-    }
+    const list = await API('/players/patches');
+    patches = list.map(p => ({
+      patch: p.patch,
+      label: `${p.patch} (${p.player_count.toLocaleString()} players)`,
+    }));
   } catch {}
-  if (!patches.length) patches = ['16.9', '16.8', '16.7', '16.6'];
+  if (!patches.length) {
+    // Hard fallback when the DB is empty — shouldn't happen in normal use
+    patches = [{ patch: '16.9', label: '16.9' }, { patch: '16.8', label: '16.8' }];
+  }
 
-  const opts = patches.map(p => `<option value="${p}">${p}</option>`).join('');
+  const opts = patches.map(p => `<option value="${p.patch}">${p.label}</option>`).join('');
   fromSel.innerHTML = opts;
   toSel.innerHTML = opts;
-  // Default: to = patches[0] (most recent), from = patches[1]
-  toSel.value = patches[0];
-  fromSel.value = patches[1] || patches[0];
+  // Default: to = newest, from = second-newest
+  toSel.value = patches[0].patch;
+  fromSel.value = patches[1] ? patches[1].patch : patches[0].patch;
 
   document.getElementById('pi-apply').addEventListener('click', loadPatchImpact);
   loadPatchImpact();

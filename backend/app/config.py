@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     #   "tier_region" — 1 key per (tier × region) cell (9 keys ideal)
     #   "round_robin" — distribute work units evenly across all keys
     daily_ingest_partition: str = "tier"
+    # When True, the scheduler rotates which tier runs each day instead
+    # of running all tiers every day. Day N picks tiers[N % num_tiers].
+    # Useful with 2 keys where the full 3-tier sweep doesn't fit a 4h
+    # window. Each tier still gets refreshed every `num_tiers` days,
+    # which is plenty for GM/Master (low daily activity).
+    daily_ingest_rotate_tiers: bool = False
 
     # lol.fandom.com bot credentials (Leaguepedia/Cargo). Anonymous use is rate-
     # limited to ~1 req/min — basically unusable. Get a bot password at

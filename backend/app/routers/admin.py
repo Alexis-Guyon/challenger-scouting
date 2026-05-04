@@ -328,7 +328,8 @@ def _sync_tournaments_job(job_id: str, league_slugs: list[str], max_events: int)
 
 @router.get("/scheduler/status")
 def scheduler_status():
-    """Inspect the daily-ingest scheduler config + key count + next run."""
+    """Inspect the daily-ingest scheduler config + key count + next run.
+    When rotation is enabled, also surfaces today's + tomorrow's tier."""
     from datetime import datetime, timedelta
     from ..services.ingestion import _resolve_keys
     from ..services.scheduler import _job_in_flight, _scheduler_task
@@ -346,6 +347,20 @@ def scheduler_status():
             target = target + timedelta(days=1)
         next_run = target.isoformat(timespec="seconds")
 
+    all_tiers = [t.strip() for t in settings.daily_ingest_tiers.split(",") if t.strip()]
+    rotation = None
+    if settings.daily_ingest_rotate_tiers and len(all_tiers) > 1:
+        today_doy = datetime.now().timetuple().tm_yday
+        tomorrow_doy = (datetime.now() + timedelta(days=1)).timetuple().tm_yday
+        rotation = {
+            "enabled": True,
+            "today_tier": all_tiers[today_doy % len(all_tiers)],
+            "tomorrow_tier": all_tiers[tomorrow_doy % len(all_tiers)],
+            "cycle_days": len(all_tiers),
+        }
+    else:
+        rotation = {"enabled": False}
+
     return {
         "enabled": enabled,
         "running": bool(_scheduler_task and not _scheduler_task.done()),
@@ -354,7 +369,8 @@ def scheduler_status():
         "next_run_at": next_run,
         "keys_configured": len(keys),
         "regions": [r.strip() for r in settings.daily_ingest_regions.split(",") if r.strip()],
-        "tiers": [t.strip() for t in settings.daily_ingest_tiers.split(",") if t.strip()],
+        "tiers": all_tiers,
+        "rotation": rotation,
         "players_per_tier": settings.daily_ingest_players_per_tier,
         "games_per_player": settings.daily_ingest_games_per_player,
         "partition": settings.daily_ingest_partition,

@@ -48,12 +48,24 @@ async def _run_one_pass() -> None:
     from .ingestion import _resolve_keys, run_multi_key_ingestion
 
     keys = _resolve_keys()
-    tiers = [t.strip() for t in settings.daily_ingest_tiers.split(",") if t.strip()]
+    all_tiers = [t.strip() for t in settings.daily_ingest_tiers.split(",") if t.strip()]
     regions = [r.strip() for r in settings.daily_ingest_regions.split(",") if r.strip()]
-    if not (tiers and regions and keys):
+    if not (all_tiers and regions and keys):
         logger.error("daily ingest config invalid (tiers=%s regions=%s keys=%d)",
-                     tiers, regions, len(keys))
+                     all_tiers, regions, len(keys))
         return
+
+    # Tier rotation — pick tiers[day_of_year % N] when enabled. With 2
+    # keys and 3 tiers, doing all 3 every day exceeds the nightly window
+    # (~16h daily). Rotating one tier per day = ~3.5h/day and each tier
+    # gets refreshed every 3 days, which is plenty for GM/Master.
+    if settings.daily_ingest_rotate_tiers and len(all_tiers) > 1:
+        idx = datetime.now().timetuple().tm_yday % len(all_tiers)
+        tiers = [all_tiers[idx]]
+        logger.info("daily ingest rotation: today is day-of-year mod %d = %d → tier=%s",
+                    len(all_tiers), idx, tiers[0])
+    else:
+        tiers = all_tiers
 
     job_id = next_job_id("daily")
     create_job(job_id, "daily_ingest", params={

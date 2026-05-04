@@ -42,6 +42,10 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    # Cache the CORS preflight response for 24h. Without this, the browser
+    # re-OPTIONS every request after 10min (FastAPI default), doubling the
+    # request count visible in the logs (each GET preceded by OPTIONS).
+    max_age=86400,
 )
 
 app.include_router(auth.router)

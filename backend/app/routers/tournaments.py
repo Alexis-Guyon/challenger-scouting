@@ -825,6 +825,12 @@ def team_detail(code: str, db: Session = Depends(get_db)):
     + recent tournament results.
 
     `code` matches ProTeam.code (e.g. "G2", "FNC", "KC"). Case-insensitive.
+
+    Falls back to a PlayerMeta-only synthetic team when the code isn't
+    in our `pro_teams` table — e.g. teams playing in leagues we don't
+    sync (Prime League, La Liga of Legends, etc.). The roster still
+    renders from PlayerMeta.current_team_tag; recent matches will be
+    empty until that league's tournaments are ingested.
     """
     code_norm = code.strip().upper()
     team = (
@@ -833,17 +839,39 @@ def team_detail(code: str, db: Session = Depends(get_db)):
         .order_by(ProTeam.league_slug.asc())  # prefer LEC > sub-leagues if duplicate code
         .first()
     )
+
+    # Fallback: build a synthetic ProTeam-like record from PlayerMeta
+    # when no tournament data exists for this team yet.
     if not team:
-        raise HTTPException(404, f"team not found: {code_norm}")
+        sample_meta = (
+            db.query(PlayerMeta)
+            .filter(PlayerMeta.current_team_tag == code_norm)
+            .filter(PlayerMeta.is_pro == True)  # noqa: E712
+            .filter(PlayerMeta.is_retired == False)  # noqa: E712
+            .first()
+        )
+        if not sample_meta:
+            raise HTTPException(404, f"team not found: {code_norm}")
+        # Build a stand-in. ID is None so the recent-matches branch below
+        # short-circuits to empty without erroring.
+        class _SyntheticTeam:
+            id = None
+            code = code_norm
+            name = sample_meta.current_team or code_norm
+            league_slug = None  # unknown — not in our tournament data
+            image_url = sample_meta.current_team_logo_url
+        team = _SyntheticTeam()
 
     # --- Recent matches (last 10) ---
+    # Skip the SQL when team.id is None (synthetic-team fallback) — there's
+    # no point joining OfficialMatch on a non-existent team_id.
     recent_matches = (
         db.query(OfficialMatch)
         .filter((OfficialMatch.blue_team_id == team.id) | (OfficialMatch.red_team_id == team.id))
         .order_by(desc(OfficialMatch.game_date))
         .limit(10)
         .all()
-    )
+    ) if team.id else []
     other_team_ids = {
         (m.red_team_id if m.blue_team_id == team.id else m.blue_team_id)
         for m in recent_matches

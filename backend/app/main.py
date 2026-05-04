@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -16,7 +17,18 @@ Path("data").mkdir(parents=True, exist_ok=True)
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Challenger Lab", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup → start the daily-ingest scheduler if enabled.
+    Shutdown → cancel it cleanly."""
+    from .services.scheduler import start_scheduler, stop_scheduler
+    start_scheduler()
+    yield
+    stop_scheduler()
+
+
+app = FastAPI(title="Challenger Lab", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

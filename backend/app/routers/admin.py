@@ -326,6 +326,52 @@ def _sync_tournaments_job(job_id: str, league_slugs: list[str], max_events: int)
         update_job(job_id, status="error", error=str(exc))
 
 
+@router.get("/scheduler/status")
+def scheduler_status():
+    """Inspect the daily-ingest scheduler config + key count + next run."""
+    from datetime import datetime, timedelta
+    from ..services.ingestion import _resolve_keys
+    from ..services.scheduler import _job_in_flight, _scheduler_task
+
+    keys = _resolve_keys()
+    enabled = settings.daily_ingest_enabled
+    hour = settings.daily_ingest_hour
+    minute = settings.daily_ingest_minute
+
+    next_run = None
+    if enabled:
+        now = datetime.now()
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target <= now:
+            target = target + timedelta(days=1)
+        next_run = target.isoformat(timespec="seconds")
+
+    return {
+        "enabled": enabled,
+        "running": bool(_scheduler_task and not _scheduler_task.done()),
+        "in_flight": _job_in_flight,
+        "trigger": f"{hour:02d}:{minute:02d} (server local)",
+        "next_run_at": next_run,
+        "keys_configured": len(keys),
+        "regions": [r.strip() for r in settings.daily_ingest_regions.split(",") if r.strip()],
+        "tiers": [t.strip() for t in settings.daily_ingest_tiers.split(",") if t.strip()],
+        "players_per_tier": settings.daily_ingest_players_per_tier,
+        "games_per_player": settings.daily_ingest_games_per_player,
+        "partition": settings.daily_ingest_partition,
+    }
+
+
+@router.post("/scheduler/trigger-now")
+async def scheduler_trigger_now(background: BackgroundTasks):
+    """Run the daily ingest right now (instead of waiting for 4am).
+    Returns immediately — the job runs as a background task."""
+    from ..services.scheduler import trigger_now, _job_in_flight
+    if _job_in_flight:
+        raise HTTPException(409, "another daily ingest run is already in flight")
+    background.add_task(trigger_now)
+    return {"ok": True, "message": "daily ingest started in background — see /admin/jobs"}
+
+
 @router.post("/sync-tournaments")
 def sync_tournaments(
     background: BackgroundTasks,

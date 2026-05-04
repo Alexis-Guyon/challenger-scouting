@@ -321,6 +321,234 @@ async def run_ingestion(
         db.close()
 
 
+def _resolve_keys() -> list[str]:
+    """Return the list of API keys configured. Falls back to the single-
+    key `riot_api_key` when `riot_api_keys` is empty."""
+    raw = (settings.riot_api_keys or "").strip()
+    if raw:
+        keys = [k.strip() for k in raw.split(",") if k.strip()]
+        if keys:
+            return keys
+    return [settings.riot_api_key]
+
+
+def _partition_work(
+    tiers: list[str],
+    regions: list[str],
+    keys: list[str],
+    strategy: str,
+) -> list[tuple[str, list[tuple[str, str]]]]:
+    """Split (tier × region) cells across keys.
+
+    Returns: [(api_key, [(tier, region), ...]), ...]
+    Each key gets a list of work units to process sequentially with its
+    own RateLimiter. The list of (key, units) tuples is what the multi-
+    key runner executes in parallel.
+    """
+    cells = [(t, r) for t in tiers for r in regions]
+    n_keys = len(keys)
+    out: list[tuple[str, list[tuple[str, str]]]] = []
+
+    if n_keys == 1 or strategy == "round_robin":
+        # Stripe cells across keys
+        groups: dict[int, list[tuple[str, str]]] = {i: [] for i in range(n_keys)}
+        for i, cell in enumerate(cells):
+            groups[i % n_keys].append(cell)
+        for i, k in enumerate(keys):
+            if groups[i]:
+                out.append((k, groups[i]))
+        return out
+
+    if strategy == "tier":
+        # 1 key per tier — cycle through keys if more tiers than keys
+        for i, t in enumerate(tiers):
+            k = keys[i % n_keys]
+            units = [(t, r) for r in regions]
+            # Merge into existing entry for this key (preserves order)
+            existing = next((e for e in out if e[0] == k), None)
+            if existing:
+                existing[1].extend(units)
+            else:
+                out.append((k, units))
+        return out
+
+    if strategy == "region":
+        for i, r in enumerate(regions):
+            k = keys[i % n_keys]
+            units = [(t, r) for t in tiers]
+            existing = next((e for e in out if e[0] == k), None)
+            if existing:
+                existing[1].extend(units)
+            else:
+                out.append((k, units))
+        return out
+
+    if strategy == "tier_region":
+        for i, cell in enumerate(cells):
+            k = keys[i % n_keys]
+            existing = next((e for e in out if e[0] == k), None)
+            if existing:
+                existing[1].append(cell)
+            else:
+                out.append((k, [cell]))
+        return out
+
+    raise ValueError(f"unknown partition strategy {strategy!r}")
+
+
+async def _ingest_one_unit(
+    api_key: str,
+    tier: str,
+    platform: str,
+    player_limit: int,
+    matches_per_player: int,
+    progress_cb=None,
+) -> dict:
+    """Fetch the tier's ladder for `platform` then ingest each player's
+    recent matches. Uses a key-scoped RateLimiter (independent budget).
+
+    Returns {tier, region, players, matches_added}.
+    """
+    from .riot_client import PLATFORM_TO_REGION, RateLimiter
+
+    super_region = PLATFORM_TO_REGION.get(platform, settings.region)
+    limiter = RateLimiter()  # per-(unit) — actually per-key, see runner below
+    matches_added = 0
+    n_players = 0
+
+    db = SessionLocal()
+    try:
+        async with RiotClient(api_key=api_key, platform=platform,
+                              region=super_region, limiter=limiter) as client:
+            try:
+                players = await ingest_tier_players(client, db, tier, limit=player_limit)
+            except Exception as exc:
+                logger.exception("league fetch failed for tier=%s region=%s: %s",
+                                 tier, platform, exc)
+                return {"tier": tier, "region": platform, "players": 0,
+                        "matches_added": 0, "error": str(exc)}
+            for p in players:
+                n_players += 1
+                try:
+                    added = await ingest_player_matches(client, db, p.puuid,
+                                                         count=matches_per_player)
+                    matches_added += added
+                except Exception as exc:
+                    logger.exception("matches ingest failed for %s: %s",
+                                     p.summoner_name, exc)
+                if progress_cb:
+                    try:
+                        progress_cb(tier, platform, n_players, len(players),
+                                    p.summoner_name, matches_added)
+                    except Exception:
+                        pass
+    finally:
+        db.close()
+
+    return {"tier": tier, "region": platform, "players": n_players,
+            "matches_added": matches_added}
+
+
+async def run_multi_key_ingestion(
+    tiers: list[str],
+    regions: list[str],
+    keys: list[str] | None = None,
+    partition: str = "tier",
+    player_limit: int = 500,
+    matches_per_player: int = 30,
+    progress_cb=None,
+) -> dict:
+    """Parallel multi-key ingest.
+
+    Each key gets its own RateLimiter (Riot quota is per-key) so the
+    keys run TRULY in parallel. Within one key, work units are processed
+    sequentially.
+
+    Defaults:
+      - keys: from settings (.env RIOT_API_KEYS, falls back to RIOT_API_KEY)
+      - partition: "tier" (1 key per tier — see _partition_work for options)
+    """
+    from .riot_client import PLATFORM_TO_REGION, RateLimiter
+
+    keys = keys or _resolve_keys()
+    if not keys:
+        raise RuntimeError("no API keys configured")
+    tiers = [t.lower() for t in tiers]
+    regions = [r.lower() for r in regions]
+
+    plan = _partition_work(tiers, regions, keys, partition)
+
+    logger.info(
+        "Multi-key ingest: %d key(s), %d tier(s), %d region(s), partition=%s",
+        len(keys), len(tiers), len(regions), partition,
+    )
+    for i, (key, units) in enumerate(plan):
+        logger.info("  key #%d (%s…) → %d unit(s): %s",
+                    i + 1, key[:10], len(units),
+                    ", ".join(f"{t}/{r}" for t, r in units))
+
+    # Each key gets its OWN limiter — keys run in parallel without
+    # stepping on each other's quota.
+    async def _run_for_key(api_key: str, units: list[tuple[str, str]]) -> list[dict]:
+        per_key_limiter = RateLimiter()
+        results: list[dict] = []
+        for tier, platform in units:
+            super_region = PLATFORM_TO_REGION.get(platform, settings.region)
+            db = SessionLocal()
+            try:
+                async with RiotClient(api_key=api_key, platform=platform,
+                                      region=super_region,
+                                      limiter=per_key_limiter) as client:
+                    try:
+                        players = await ingest_tier_players(client, db, tier,
+                                                             limit=player_limit)
+                    except Exception as exc:
+                        logger.exception("league fetch failed tier=%s region=%s",
+                                         tier, platform)
+                        results.append({"tier": tier, "region": platform,
+                                        "players": 0, "matches_added": 0,
+                                        "error": str(exc)})
+                        continue
+                    matches_added = 0
+                    for i, p in enumerate(players, start=1):
+                        try:
+                            added = await ingest_player_matches(client, db, p.puuid,
+                                                                 count=matches_per_player)
+                            matches_added += added
+                        except Exception as exc:
+                            logger.warning("matches failed for %s: %s",
+                                           p.summoner_name, exc)
+                        if progress_cb:
+                            try:
+                                progress_cb(tier, platform, i, len(players),
+                                            p.summoner_name, matches_added)
+                            except Exception:
+                                pass
+                    results.append({"tier": tier, "region": platform,
+                                    "players": len(players),
+                                    "matches_added": matches_added})
+            finally:
+                db.close()
+        return results
+
+    # Launch one task per key, gather in parallel
+    tasks = [_run_for_key(key, units) for key, units in plan]
+    all_results = await asyncio.gather(*tasks, return_exceptions=False)
+
+    flat: list[dict] = []
+    for sub in all_results:
+        flat.extend(sub)
+    summary = {
+        "keys_used": len(plan),
+        "units_completed": len(flat),
+        "total_players": sum(r.get("players", 0) for r in flat),
+        "total_matches_added": sum(r.get("matches_added", 0) for r in flat),
+        "results": flat,
+    }
+    logger.info("Multi-key ingest done: %s", summary)
+    return summary
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     asyncio.run(run_ingestion())

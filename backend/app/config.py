@@ -13,6 +13,12 @@ _ENV_FILE = _BACKEND_DIR / ".env"
 
 class Settings(BaseSettings):
     riot_api_key: str = "RGAPI-DEMO"
+    # Multi-key support: comma-separated list of API keys. When set, the
+    # daily ingest partitions work across keys (each key gets its own
+    # RateLimiter, so 3 keys = 3× sustained throughput). Falls back to
+    # `riot_api_key` when empty (single-key back-compat). Example:
+    #   RIOT_API_KEYS=RGAPI-aaa,RGAPI-bbb,RGAPI-ccc
+    riot_api_keys: str = ""
     platform: str = "euw1"
     region: str = "europe"
     min_games: int = 20
@@ -21,6 +27,24 @@ class Settings(BaseSettings):
     current_patch: str = "14.9"
     jwt_secret: str = "dev-secret-change-me"
     jwt_expiry_hours: int = 72
+
+    # ------------------------------------------------------------------
+    # Daily scheduled ladder ingest (KR / EUW / NA at 4am).
+    # Disabled by default. Set DAILY_INGEST_ENABLED=true to turn on.
+    # ------------------------------------------------------------------
+    daily_ingest_enabled: bool = False
+    daily_ingest_hour: int = 4   # server local time, 24h
+    daily_ingest_minute: int = 0
+    daily_ingest_regions: str = "euw1,kr,na1"
+    daily_ingest_tiers: str = "challenger,grandmaster,master"
+    daily_ingest_players_per_tier: int = 500
+    daily_ingest_games_per_player: int = 30
+    # Key-to-work assignment strategy. One of:
+    #   "tier"        — 1 key per tier (3 keys for chall/gm/master)
+    #   "region"      — 1 key per region
+    #   "tier_region" — 1 key per (tier × region) cell (9 keys ideal)
+    #   "round_robin" — distribute work units evenly across all keys
+    daily_ingest_partition: str = "tier"
 
     # lol.fandom.com bot credentials (Leaguepedia/Cargo). Anonymous use is rate-
     # limited to ~1 req/min — basically unusable. Get a bot password at

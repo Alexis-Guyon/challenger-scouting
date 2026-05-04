@@ -46,13 +46,49 @@ def _run_pipeline_job(
         })
 
     try:
-        asyncio.run(run_ingestion(
-            player_limit=player_limit,
-            matches_per_player=matches_per_player,
-            progress_cb=_on_player_done,
-            tiers=tiers,
-            regions=regions,
-        ))
+        # Auto-route to multi-key parallel ingest when ≥2 keys are configured
+        # (RIOT_API_KEYS env var). Falls back to the legacy single-key path
+        # when only RIOT_API_KEY is set.
+        from ..services.ingestion import _resolve_keys, run_multi_key_ingestion
+
+        keys = _resolve_keys()
+        if len(keys) >= 2:
+            update_job(job_id, extras_merge={
+                "mode": "multi-key",
+                "keys_used": len(keys),
+                "partition": settings.daily_ingest_partition,
+            })
+
+            def _multi_progress(tier, region, i, n, name, matches_added):
+                pct = round(i / max(n, 1) * 100, 1)
+                update_job(job_id, progress={
+                    "phase": "ingest",
+                    "tier": tier, "region": region,
+                    "player_idx": i, "player_total": n,
+                    "current_player": name,
+                    "matches_added": matches_added,
+                    "step": f"{tier.upper()}/{region.upper()} {i}/{n} ({pct}%)",
+                })
+
+            summary = asyncio.run(run_multi_key_ingestion(
+                tiers=tiers or ["challenger"],
+                regions=regions or [settings.platform],
+                keys=keys,
+                partition=settings.daily_ingest_partition,
+                player_limit=player_limit,
+                matches_per_player=matches_per_player,
+                progress_cb=_multi_progress,
+            ))
+            update_job(job_id, extras_merge={"multi_key_summary": summary})
+        else:
+            update_job(job_id, extras_merge={"mode": "single-key"})
+            asyncio.run(run_ingestion(
+                player_limit=player_limit,
+                matches_per_player=matches_per_player,
+                progress_cb=_on_player_done,
+                tiers=tiers,
+                regions=regions,
+            ))
 
         if auto_resolve_names:
             update_job(job_id, step="resolve_names")

@@ -48,26 +48,35 @@ _resolution_cache_at: float = 0.0
 
 def _build_resolution_indexes(db: Session) -> dict:
     """Return {lolpros_name_index, summoner_name_index, pro_puuid_set,
-    omp_candidate_index}."""
-    lolpros_name_index: dict[str, PlayerMeta] = {}
-    metas_with_profile = db.query(PlayerMeta).filter(
+    omp_candidate_index}.
+
+    All values are PLAIN STRINGS (puuids), never ORM instances. Caching
+    SQLAlchemy entities here would survive past their session's lifetime
+    and trigger DetachedInstanceError on the next access. Consumers that
+    need to mutate a PlayerMeta should re-fetch via db.get(PlayerMeta, puuid)
+    using the request's own session.
+    """
+    # name → puuid (the puuid of the PlayerMeta whose Lolpros profile name matched)
+    lolpros_name_index: dict[str, str] = {}
+    metas_with_profile = db.query(PlayerMeta.puuid, PlayerMeta.lolpros_profile_json).filter(
         PlayerMeta.lolpros_profile_json.isnot(None)
     ).all()
-    for m in metas_with_profile:
+    for puuid, profile_json in metas_with_profile:
         try:
-            profile = _json.loads(m.lolpros_profile_json)
+            profile = _json.loads(profile_json)
         except Exception:
             continue
         for cand in _candidates_for_match(profile.get("name") or ""):
-            lolpros_name_index.setdefault(cand, m)
+            lolpros_name_index.setdefault(cand, puuid)
 
-    summoner_name_index: dict[str, list] = {}
-    for p in db.query(Player).all():
-        for cand in _candidates_for_match(p.summoner_name or ""):
-            summoner_name_index.setdefault(cand, []).append(p)
+    # name → [puuid, ...] (one or more Player rows whose summoner_name matched)
+    summoner_name_index: dict[str, list[str]] = {}
+    for puuid, summoner_name in db.query(Player.puuid, Player.summoner_name).all():
+        for cand in _candidates_for_match(summoner_name or ""):
+            summoner_name_index.setdefault(cand, []).append(puuid)
 
     pro_puuid_set: set[str] = {
-        m.puuid for m in db.query(PlayerMeta).filter(PlayerMeta.is_pro == True).all()  # noqa: E712
+        row[0] for row in db.query(PlayerMeta.puuid).filter(PlayerMeta.is_pro == True).all()  # noqa: E712
     }
 
     # OMP candidate index: normalized name → pro_player_id. Used by
@@ -447,13 +456,16 @@ def _summarize_pro_player(
         if op.summoner_name:
             cand_set.update(_candidates_for_match(op.summoner_name))
 
-    # 2. Lolpros profile name match → cache the cross-link for next call
+    # 2. Lolpros profile name match → cache the cross-link for next call.
+    #    The index stores plain puuids (str) — re-fetch via current
+    #    session if we need to update lolesports_id.
     if not riot_puuid and lolpros_name_index:
         for cand in cand_set:
-            m = lolpros_name_index.get(cand)
-            if m:
-                riot_puuid = m.puuid
-                if not m.lolesports_id:
+            cached_puuid = lolpros_name_index.get(cand)
+            if cached_puuid:
+                riot_puuid = cached_puuid
+                m = db.get(PlayerMeta, cached_puuid)
+                if m and not m.lolesports_id:
                     m.lolesports_id = pro_player_id
                     db.commit()
                 break
@@ -461,38 +473,38 @@ def _summarize_pro_player(
     # 3. Riot summoner_name match (single-hit only, anti-collision)
     if not riot_puuid and summoner_name_index:
         for cand in cand_set:
-            hits = summoner_name_index.get(cand) or []
-            if len(hits) == 1:
-                p = hits[0]
+            hits_puuids = summoner_name_index.get(cand) or []
+            if len(hits_puuids) == 1:
+                p_puuid = hits_puuids[0]
                 # Persist the cross-link on this player's PlayerMeta
-                m = db.get(PlayerMeta, p.puuid)
+                m = db.get(PlayerMeta, p_puuid)
                 if not m:
-                    m = PlayerMeta(puuid=p.puuid)
+                    m = PlayerMeta(puuid=p_puuid)
                     db.add(m)
                 if not m.lolesports_id:
                     m.lolesports_id = pro_player_id
                     db.commit()
-                riot_puuid = p.puuid
+                riot_puuid = p_puuid
                 break
 
     # 4. Multi-hit summoner_name → restrict to is_pro=True. Disambiguates
     #    short pro IGNs (e.g. "Way") that collide with many ladder accounts.
     if not riot_puuid and summoner_name_index and pro_puuid_set:
         for cand in cand_set:
-            hits = summoner_name_index.get(cand) or []
-            if len(hits) <= 1:
+            hits_puuids = summoner_name_index.get(cand) or []
+            if len(hits_puuids) <= 1:
                 continue
-            pro_hits = [h for h in hits if h.puuid in pro_puuid_set]
+            pro_hits = [puuid for puuid in hits_puuids if puuid in pro_puuid_set]
             if len(pro_hits) == 1:
-                p = pro_hits[0]
-                m = db.get(PlayerMeta, p.puuid)
+                p_puuid = pro_hits[0]
+                m = db.get(PlayerMeta, p_puuid)
                 if not m:
-                    m = PlayerMeta(puuid=p.puuid)
+                    m = PlayerMeta(puuid=p_puuid)
                     db.add(m)
                 if not m.lolesports_id:
                     m.lolesports_id = pro_player_id
                     db.commit()
-                riot_puuid = p.puuid
+                riot_puuid = p_puuid
                 break
 
     soloq = None
@@ -605,23 +617,27 @@ def tournament_match_detail(match_id: str, db: Session = Depends(get_db)):
 
         # 2. Match against cached Lolpros profile names. The Lolpros
         #    profile gives us the cleanest cross-reference (name="Razork").
+        #    The cache stores plain puuids (not PlayerMeta) — re-fetch
+        #    via current session to read/update lolesports_id.
         if not riot_puuid:
             for cand in cand_set:
-                meta = _lolpros_name_index.get(cand)
-                if meta:
-                    riot_puuid = meta.puuid
-                    if p.pro_player_id and not meta.lolesports_id:
-                        meta.lolesports_id = p.pro_player_id
-                        db.commit()
+                cached_puuid = _lolpros_name_index.get(cand)
+                if cached_puuid:
+                    riot_puuid = cached_puuid
+                    if p.pro_player_id:
+                        meta = db.get(PlayerMeta, cached_puuid)
+                        if meta and not meta.lolesports_id:
+                            meta.lolesports_id = p.pro_player_id
+                            db.commit()
                     break
 
         # 3. Riot summoner_name match (uses pre-built index, fast).
         #    Only accept exactly-one-hit to avoid false positives.
         if not riot_puuid:
             for cand in cand_set:
-                hits = _summoner_name_index.get(cand) or []
-                if len(hits) == 1:
-                    riot_puuid = hits[0].puuid
+                hits_puuids = _summoner_name_index.get(cand) or []
+                if len(hits_puuids) == 1:
+                    riot_puuid = hits_puuids[0]
                     break
 
         # 4. Multi-hit summoner_name → restrict to known pros. Catches short
@@ -631,12 +647,12 @@ def tournament_match_detail(match_id: str, db: Session = Depends(get_db)):
         #    requests hit strategy 1.
         if not riot_puuid:
             for cand in cand_set:
-                hits = _summoner_name_index.get(cand) or []
-                if len(hits) <= 1:
+                hits_puuids = _summoner_name_index.get(cand) or []
+                if len(hits_puuids) <= 1:
                     continue
-                pro_hits = [h for h in hits if h.puuid in _pro_puuid_set]
+                pro_hits = [puuid for puuid in hits_puuids if puuid in _pro_puuid_set]
                 if len(pro_hits) == 1:
-                    riot_puuid = pro_hits[0].puuid
+                    riot_puuid = pro_hits[0]
                     if p.pro_player_id:
                         m = db.get(PlayerMeta, riot_puuid)
                         if m and not m.lolesports_id:

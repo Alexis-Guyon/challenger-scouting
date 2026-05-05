@@ -165,10 +165,38 @@ async def _ingest_one_game(client: LolesportsClient, db: Session,
     # a startingTime well past the broadcast start. If the API has data
     # beyond it, we get the last available window.
     bc_start = _parse_iso(event.get("startTime"))
+
+    def _has_real_data(w: dict | None) -> bool:
+        """A window is 'real' when its last frame has any team kills > 0
+        — frames at game time 0:00 always show 0/0 even when the data
+        block exists. Avoids treating start-of-game data as final."""
+        if not w or not w.get("frames"):
+            return False
+        last = w["frames"][-1]
+        return ((last.get("blueTeam") or {}).get("totalKills", 0) or 0) \
+             + ((last.get("redTeam") or {}).get("totalKills", 0) or 0) > 0
+
+    # Fast path: +120min probe usually catches game 1 + game 2 of a Bo3.
     end_probe_iso = round_to_10s_iso(bc_start + timedelta(minutes=120)) if bc_start else None
-    window = await client.get_window(game_id, end_probe_iso)
+    window = await client.get_window(game_id, end_probe_iso) if end_probe_iso else None
+
+    # Slow path: scan the broadcast timeline for late-Bo3 games (g3 of a
+    # Bo5 plays around +180min, sometimes +240min). Reported case:
+    # VIT-FNC g3 on 04/05/2026 was at +180min, was missed by the single
+    # +120min probe and ended up as a placeholder. We only enter this
+    # branch when the fast probe returns empty/all-zero, so common
+    # cases (g1, g2, fast Bo3s) keep their original speed.
+    if bc_start and not _has_real_data(window):
+        for offset_min in (180, 240, 90, 60, 30):
+            probe_iso = round_to_10s_iso(bc_start + timedelta(minutes=offset_min))
+            w = await client.get_window(game_id, probe_iso)
+            if _has_real_data(w):
+                window = w
+                break
+
     if not window or not window.get("frames"):
-        # Fall back to the no-arg call (start of game) — better than nothing
+        # Last resort: no-arg call (returns first 10 frames of the game,
+        # often all zeros — caught by the ghost detection below).
         window = await client.get_window(game_id)
     if not window or not window.get("frames"):
         return False, "no_window_data"

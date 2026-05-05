@@ -294,7 +294,42 @@ def player_tournament_stats(puuid: str, user: User = Depends(get_current_user), 
             "kills": r.kills, "deaths": r.deaths, "assists": r.assists,
             "kda": round(r.kda, 2), "cs": r.cs, "gd15": r.gd_at_15, "csd15": r.csd_at_15,
             "kp": round(r.kill_participation, 3),
+            "data_complete": True,
         })
+
+    # Surface placeholder games (data_complete=False) from the same Bo3
+    # series the player participated in. We can't link these by puuid
+    # (no participant rows exist) but they share an `event_id` with
+    # the player's known games. The user sees "this 3rd game existed
+    # but stats weren't archived" instead of a silent gap.
+    player_event_ids = {
+        m.event_id for m in matches.values() if m and m.event_id
+    }
+    if player_event_ids:
+        placeholder_matches = (
+            db.query(OfficialMatch)
+            .filter(OfficialMatch.event_id.in_(player_event_ids))
+            .filter(OfficialMatch.data_complete == False)  # noqa: E712
+            .all()
+        )
+        for pm in placeholder_matches:
+            tour = tour_objs.get(pm.tournament_id) if pm.tournament_id else None
+            recent.append({
+                "match_id": pm.id,
+                "game_date": pm.game_date.isoformat() if pm.game_date else None,
+                "patch": pm.patch,
+                "block_name": pm.block_name,
+                "tournament": tour.name if tour else None,
+                "league_slug": tour.league_slug if tour else None,
+                "side": None, "role": None, "champion": None,
+                "win": ((pm.blue_win is True) if pm.blue_win is not None else None),
+                "kills": 0, "deaths": 0, "assists": 0, "kda": 0.0,
+                "cs": 0, "gd15": 0, "csd15": 0, "kp": 0.0,
+                "data_complete": False,
+            })
+        # Re-sort so placeholders interleave by date
+        recent.sort(key=lambda r: r["game_date"] or "", reverse=True)
+        recent = recent[:15]
 
     return {
         "matched": True,

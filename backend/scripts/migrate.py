@@ -64,6 +64,8 @@ NEW_COLUMNS = [
     # Recruitment kanban — pipeline stage on each watchlist entry
     ("watchlist", "stage", "VARCHAR DEFAULT 'watch'"),
     ("watchlist", "stage_changed_at", "DATETIME"),
+    # Track tournament games where lolesports livestats had no frame data
+    ("official_matches", "data_complete", "BOOLEAN DEFAULT 1"),
 ]
 
 

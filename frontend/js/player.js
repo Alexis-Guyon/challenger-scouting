@@ -1264,7 +1264,23 @@ async function loadTournamentTab(puuid) {
         <table>
           <thead><tr><th>Date</th><th>League</th><th>Block</th><th>Champ</th><th>K/D/A</th><th>GD@15</th><th>W</th></tr></thead>
           <tbody>
-            ${(data.recent_matches||[]).map(r => `
+            ${(data.recent_matches||[]).map(r => {
+              if (r.data_complete === false) {
+                // Placeholder: lolesports had no frame data. Show the match
+                // exists (date + league + W/L) but mute the stats columns
+                // to make it obvious that data isn't available.
+                return `
+                <tr class="tn-match-row tn-match-placeholder" data-mid="${r.match_id}" style="cursor:pointer;opacity:0.55;font-style:italic;" title="Stats unavailable — lolesports' livestats feed didn't archive frame data for this game.">
+                  <td>${r.game_date ? new Date(r.game_date).toLocaleDateString() : '—'}</td>
+                  <td>${(r.league_slug||'').toUpperCase()}</td>
+                  <td>${r.block_name||''}</td>
+                  <td><span class="muted">stats N/A</span></td>
+                  <td>—</td>
+                  <td>—</td>
+                  <td>${r.win === true ? '<span class="delta-pos">W</span>' : r.win === false ? '<span class="delta-neg">L</span>' : '—'}</td>
+                </tr>`;
+              }
+              return `
               <tr class="tn-match-row" data-mid="${r.match_id}" style="cursor:pointer;">
                 <td>${r.game_date ? new Date(r.game_date).toLocaleDateString() : '—'}</td>
                 <td>${(r.league_slug||'').toUpperCase()}</td>
@@ -1273,7 +1289,8 @@ async function loadTournamentTab(puuid) {
                 <td>${r.kills}/${r.deaths}/${r.assists}</td>
                 <td class="${r.gd15>=0?'delta-pos':'delta-neg'}">${r.gd15 ?? '—'}</td>
                 <td>${r.win ? '<span class="delta-pos">W</span>' : '<span class="delta-neg">L</span>'}</td>
-              </tr>`).join('') || '<tr><td colspan="7" class="muted">No data.</td></tr>'}
+              </tr>`;
+            }).join('') || '<tr><td colspan="7" class="muted">No data.</td></tr>'}
           </tbody>
         </table>
       </div>

@@ -219,6 +219,12 @@ class OfficialMatch(Base):
     duration_sec = Column(Integer)
     game_date = Column(DateTime, index=True)
     state = Column(String)                        # completed / inProgress / unstarted
+    # False when lolesports' livestats feed returned all-zero frame data
+    # (some games have no per-player stats archived). Match metadata
+    # (teams, date, win/loss) still persisted for "this game existed"
+    # visibility, but no OfficialMatchParticipant rows are inserted so
+    # aggregates aren't polluted.
+    data_complete = Column(Boolean, default=True, index=True)
 
 
 class OfficialMatchParticipant(Base):

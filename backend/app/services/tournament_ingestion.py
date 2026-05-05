@@ -175,12 +175,16 @@ async def _ingest_one_game(client: LolesportsClient, db: Session,
 
     last = _final_state(window)
 
-    # Reject "ghost games" — when the end-probe at +120min returns nothing
-    # AND the no-arg fallback returns the FIRST 10 frames (game state at
-    # 0:00 to 0:10), all stats are 0. Persisting these would pollute the
-    # team summary with zero K/D/A/CS/Gold rows. Detect by summing every
-    # participant stat in the last frame: if total = 0 across all 10
-    # players, the data is unusable.
+    # Detect "ghost games" — the livestats feed returns all-zero frame
+    # data for some games (some Riot/lolesports limitation we can't fix
+    # client-side; retries don't help). Sum every participant stat in
+    # the last frame: if total = 0 across all 10 players, the data is
+    # genuinely missing.
+    #
+    # We DON'T discard these games. We persist OfficialMatch with
+    # `data_complete=False` and skip the per-participant insertion — so
+    # the user can see "this game existed" in the team's recent-matches
+    # list, but the all-zero stats don't pollute aggregates.
     _zero_check = 0
     for p in last["by_pid"].values():
         _zero_check += (
@@ -188,8 +192,7 @@ async def _ingest_one_game(client: LolesportsClient, db: Session,
             + (p.get("creepScore") or 0)
             + max(0, (p.get("totalGold") or 0) - 500)  # subtract starting gold
         )
-    if _zero_check == 0:
-        return False, "ghost_game_zero_stats"
+    is_placeholder = _zero_check == 0
     # The last window only spans 100 s; estimate full game duration from the
     # rfc460Timestamp of the last frame minus broadcast startTime (less ~3 min
     # for draft + load). Bounded to [15 min, 80 min] to filter outliers.
@@ -323,8 +326,17 @@ async def _ingest_one_game(client: LolesportsClient, db: Session,
         duration_sec=duration_sec,
         game_date=_parse_iso(event.get("startTime")),
         state="completed",
+        data_complete=not is_placeholder,
     )
     db.add(om)
+
+    # Placeholder match: persist metadata only (no per-player stats),
+    # because lolesports' livestats feed had no frame data. The match
+    # appears in the team's recent-matches list with a "stats unavailable"
+    # marker, but doesn't pollute KDA/CS/Gold averages.
+    if is_placeholder:
+        db.commit()
+        return True, "placeholder_no_stats"
 
     # Roster info comes from gameMetadata
     metadata = window.get("gameMetadata", {})

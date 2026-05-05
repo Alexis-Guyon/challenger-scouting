@@ -314,9 +314,14 @@ async def _ingest_one_game(client: LolesportsClient, db: Session,
         pt.name = t.get("name") or pt.name
         pt.image_url = t.get("image") or pt.image_url
 
+    # The Bo3/Bo5 wrapper ID lives at event.match.id, NOT event.id.
+    # Without this, all games in the same Bo3 had event_id=None and the
+    # "find sibling games of the same series" join (used to surface
+    # placeholder games on the player's profile) never matched.
+    series_id = (event.get("match") or {}).get("id") or event.get("id")
     om = OfficialMatch(
         id=game_id,
-        event_id=event.get("id"),
+        event_id=series_id,
         tournament_id=tournament_id,
         block_name=event.get("blockName") or "",
         blue_team_id=blue_team_id,

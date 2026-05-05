@@ -1,24 +1,34 @@
+import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Form, HTTPException, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from ..auth import get_current_user, hash_password, issue_token, require_admin, verify_password
 from ..db import get_db
 from ..models import User
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/login")
 def login(
+    request: Request,
     username: str = Form(...),
     password: str = Form(...),
     db: Session = Depends(get_db),
 ):
+    # Log every login attempt with IP — helps detect brute-force / probing
+    # from unauthorized IPs (the tool is internal-only so any unfamiliar
+    # IP hitting /auth/login is worth investigating).
+    client_ip = request.client.host if request.client else "?"
     user = db.query(User).filter_by(username=username).first()
     if not user or not user.is_active or not verify_password(password, user.password_hash):
+        logger.warning("auth: FAILED login attempt for username=%r from ip=%s", username, client_ip)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
+    logger.info("auth: successful login user=%s from ip=%s", user.username, client_ip)
     token = issue_token(user)
     return {
         "access_token": token,

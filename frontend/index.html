@@ -63,6 +63,7 @@
       <a href="#" data-view="compare">Compare</a>
       <a href="#" data-view="alerts">Alerts</a>
       <a href="#" data-view="admin">Admin</a>
+      <a href="#" data-view="howto">❓ Guide</a>
     </nav>
     <div class="user-menu">
       <span id="user-label" class="muted"></span>
@@ -471,6 +472,274 @@
     <div class="card">
       <h3>History <span class="muted" style="font-size:11px;font-weight:400;">last 30 fires across all your rules</span></h3>
       <div id="al-history" class="muted" style="font-size:12px;">Loading…</div>
+    </div>
+  </section>
+</template>
+
+<template id="tpl-howto">
+  <section class="view howto-view">
+    <div class="howto-hero card">
+      <h2 style="margin:0 0 4px;letter-spacing:-0.01em;">📖 Guide d'utilisation</h2>
+      <p class="muted" style="margin:0;font-size:13px;">
+        Outil de scouting Challenger pour le recrutement pro. Tout ce qui suit
+        est en interne uniquement — pas pour partage public.
+      </p>
+      <div class="howto-toc">
+        <a href="#howto-quickstart">⚡ Quick start</a>
+        <a href="#howto-ladder">🪜 Ladder</a>
+        <a href="#howto-profile">👤 Profil joueur</a>
+        <a href="#howto-watchlist">📋 Watchlist + kanban</a>
+        <a href="#howto-patch">📊 Patch impact</a>
+        <a href="#howto-team">🏟 Team page</a>
+        <a href="#howto-compare">🆚 Compare</a>
+        <a href="#howto-admin">⚙ Admin</a>
+        <a href="#howto-css">🎯 Comprendre le CSS</a>
+        <a href="#howto-tips">💡 Astuces</a>
+        <a href="#howto-limits">⚠ Limites</a>
+      </div>
+    </div>
+
+    <div class="card howto-section" id="howto-quickstart">
+      <h3>⚡ Quick start — 3 workflows essentiels</h3>
+
+      <div class="howto-flow">
+        <div class="howto-flow-step">
+          <div class="howto-flow-num">1</div>
+          <div>
+            <strong>Trouver des prospects</strong>
+            <p>Va dans <code>Ladder</code> → coche pill <strong>🎯 Free Agents</strong> ou
+            <strong>👶 U21</strong> → trie par CSS desc → tu vois les top candidates
+            avec leur tier, age, team actuelle, CSS.</p>
+          </div>
+        </div>
+        <div class="howto-flow-step">
+          <div class="howto-flow-num">2</div>
+          <div>
+            <strong>Évaluer un prospect</strong>
+            <p>Click sur sa ligne → profil. 3 onglets : <strong>SoloQ</strong> (radar
+            + champion pool + activity heatmap), <strong>Tournament</strong> (stats
+            officielles si pro), <strong>vs LEC</strong> (delta vs chaque LEC pro
+            au même rôle).</p>
+          </div>
+        </div>
+        <div class="howto-flow-step">
+          <div class="howto-flow-num">3</div>
+          <div>
+            <strong>Track le pipeline recrutement</strong>
+            <p>Click ★ sur la ligne ou le profil → ajout watchlist. Va dans
+            <code>Watchlist</code> → drag-and-drop le joueur entre les 6 colonnes
+            (Watching → Contacted → Trial → Offer → Signed/Pass).</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card howto-section" id="howto-ladder">
+      <h3>🪜 Ladder — la vue principale</h3>
+      <p>Tous les joueurs Challenger / GM / Master de la DB, triés par CSS.</p>
+      <h4>Filtres "lourds" (Apply)</h4>
+      <ul>
+        <li><strong>Role</strong> · <strong>Region</strong> · <strong>Tier</strong> · <strong>Patch</strong> · <strong>Min games</strong> · <strong>Sort</strong></li>
+        <li><strong>Pro status</strong> : Pros / Free Agents / Amateurs uniquement</li>
+        <li><strong>Smurfs</strong> : hide / suspect_only / clean_only (basé sur le score smurf 0-100)</li>
+        <li><strong>Max age</strong> · <strong>Residency</strong> · <strong>Contract ends within</strong> (30j / 90j / 180j / 1 an)</li>
+      </ul>
+      <h4>Quick-filter pills (1 click)</h4>
+      <ul>
+        <li><strong>🎯 Free Agents</strong> — pros sans équipe → recrutement instantané</li>
+        <li><strong>🌟 Rising Stars</strong> — gros gain CSS sur les patches récents</li>
+        <li><strong>👶 U21</strong> — joueurs ≤ 21 ans</li>
+        <li><strong>⏳ Contract &lt; 90d</strong> — pros en fin de contrat (FA imminents)</li>
+        <li><strong>🧬 Group accounts by pro</strong> — collapse les smurfs/alts d'un même pro en 1 ligne avec badge "+N accounts" → click sur le badge montre tous ses comptes</li>
+      </ul>
+      <h4>Sur chaque ligne</h4>
+      <ul>
+        <li>Click n'importe où → ouvre le profil</li>
+        <li>★ = ajouter à ta watchlist (stop click propagation pour pas ouvrir le profil)</li>
+        <li>Tag équipe (ex: <code>G2</code>) → ouvre la <a href="#/team/G2">page équipe</a></li>
+      </ul>
+    </div>
+
+    <div class="card howto-section" id="howto-profile">
+      <h3>👤 Profil joueur — où le scouting se fait</h3>
+
+      <h4>Header</h4>
+      <ul>
+        <li>Photo + Riot ID + tier + LP + niveau</li>
+        <li><strong>★</strong> watchlist · <strong>👁 Smurf?</strong> manual label · <strong>📋 Markdown</strong> export · <strong>🖨 PDF</strong> print</li>
+        <li>CSS hero : grand chiffre + label (Elite / Strong / Average / Below avg)</li>
+      </ul>
+
+      <h4>📈 Onglet SoloQ</h4>
+      <ul>
+        <li><strong>CSS trend</strong> — courbe par rôle sur les patches. Headline auto : "↗ +12 CSS sur MID" si évolution &gt; 5 points</li>
+        <li><strong>🔥 Activity</strong> — streak en cours (5W/7L badge animé) + heatmap 7×24 (UTC) montrant quand il joue</li>
+        <li><strong>Radar 8 catégories</strong> — lane / damage / vision / objective / mapplay / survival / champpool / consistency</li>
+        <li><strong>Aggregate stats</strong> — toutes les stats avec tooltips (GD@15, KP, dmg share, etc.)</li>
+        <li><strong>Pro identity</strong> — si pro identifié, affiche photo + team + previous teams + social media + peak rank</li>
+        <li><strong>Champion pool</strong> — top 20 avec Champ-CSS (vs même-champion baseline)</li>
+        <li><strong>vs Champion matchups</strong> — winrate / GD@15 / KDA contre chaque champion adverse</li>
+        <li><strong>Smurf signals</strong> — décomposition multi-critères du score smurf</li>
+        <li><strong>Recent matches</strong> — click une ligne → modal deep-dive (gold curve filled, kill positions sur minimap, events timeline)</li>
+        <li><strong>Scout notes</strong> — notes privées par analyste</li>
+      </ul>
+
+      <h4>🏆 Onglet Tournament</h4>
+      <ul>
+        <li>Stats officielles par split (LEC, LCK, LCS, ERLs, MSI, Worlds)</li>
+        <li>Recent tournament matches — click une ligne → modal Bo3 avec rosters complets + stats + gold curve depuis lolesports</li>
+        <li>Si une game n'a pas de data archivée → ligne grisée "stats N/A" (placeholder)</li>
+      </ul>
+
+      <h4>🆚 Onglet vs LEC &lt;rôle&gt;</h4>
+      <ul>
+        <li><strong>2 tableaux</strong> séparés :
+          <ul>
+            <li>Tournament stats — prospect vs chaque LEC pro (KDA, KP, GD@15, CSD@15, CS/min en officiel)</li>
+            <li>SoloQ stats — prospect vs LEC pros dont le compte Riot est dans la DB</li>
+          </ul>
+        </li>
+        <li>Color-coded : vert si prospect outperforme, rouge si pro outperforme</li>
+      </ul>
+
+      <h4>📋 Markdown export</h4>
+      <p>Bouton "📋 Markdown" → télécharge un <code>.md</code> propre avec :
+      identity + headline CSS + score breakdown + roles &amp; patches + CSS trend + top champions + recent matches + scout notes + smurf signals.
+      Paste dans Notion / Discord / Slack pour partager avec le staff non-tech.</p>
+    </div>
+
+    <div class="card howto-section" id="howto-watchlist">
+      <h3>📋 Watchlist — kanban de recrutement</h3>
+      <p>Drag-and-drop entre 6 colonnes :</p>
+      <div class="howto-stages">
+        <div class="howto-stage">👀 Watching <small>scout initial</small></div>
+        <div>→</div>
+        <div class="howto-stage" style="background:linear-gradient(135deg,#a78bfa,#7c5cff)">✉ Contacted</div>
+        <div>→</div>
+        <div class="howto-stage" style="background:linear-gradient(135deg,#f5a524,#f59e0b)">🎯 Trial</div>
+        <div>→</div>
+        <div class="howto-stage" style="background:linear-gradient(135deg,#22d3a4,#10b981)">📝 Offer</div>
+        <div>→</div>
+        <div class="howto-stage" style="background:#10b981">✅ Signed</div>
+        <div>ou</div>
+        <div class="howto-stage" style="background:#7a818f">✖ Pass</div>
+      </div>
+      <p style="margin-top:14px;">Chaque card affiche : nom · rôle · tier+LP · CSS · tag · "N days in stage". Click sur la card → ouvre le profil.</p>
+      <p>Toggle <code>📊 Table</code> pour basculer en vue tableau (plus dense, mêmes infos + colonne Tag éditable inline).</p>
+    </div>
+
+    <div class="card howto-section" id="howto-patch">
+      <h3>📊 Patch impact — qui a profité du patch ?</h3>
+      <p>Vue dédiée pour le travail de meta. Sélecteurs <strong>Patch from</strong> / <strong>Patch to</strong> auto-init aux 2 plus récents (ordonnés par activité réelle, pas string-sort).</p>
+      <ul>
+        <li>Tableau trié par <strong>Δ CSS desc</strong> — biggest gainers en haut</li>
+        <li>Couleurs : vert ≥ +5 CSS · rouge ≤ −5 CSS</li>
+        <li>Filtre par rôle, min-games par patch (default 10)</li>
+        <li>Click une ligne → ouvre le profil du joueur (avec son CSS trend en contexte)</li>
+      </ul>
+      <p class="muted" style="font-size:11px;">Use case typique : nouveau patch sort → tu ouvres cette vue 2 jours plus tard → tu vois quels Challengers ont surfé la nouvelle méta. Si c'est un bot qui jouait Yunara nerf et qui retombe à 35 CSS, peut-être pas ton meilleur prospect.</p>
+    </div>
+
+    <div class="card howto-section" id="howto-team">
+      <h3>🏟 Team page — scouter une org entière</h3>
+      <p>URL directe : <code>/#/team/G2</code> (et n'importe quel team code).</p>
+      <ul>
+        <li>Logo + nom + league + record sur les 10 derniers matchs</li>
+        <li><strong>Active roster</strong> trié par rôle (TOP→JGL→MID→ADC→SUP) — image, country, age, tier+LP, CSS</li>
+        <li><strong>Recent matches</strong> — last 10 avec adversaires (logos résolus), patch, side, result. Click → modal match</li>
+        <li>Click un joueur de la roster → son profil</li>
+      </ul>
+      <p>Si l'équipe n'a pas de tournament data dans la DB (ex: Prime League, division 2), fallback synthétique : on construit la team depuis PlayerMeta. Roster fonctionne, recent_matches est vide. Marche pour <code>BIG</code>, <code>KCB</code>, etc.</p>
+    </div>
+
+    <div class="card howto-section" id="howto-compare">
+      <h3>🆚 Compare — jusqu'à 5 prospects côte-à-côte</h3>
+      <ul>
+        <li>Tape un nom dans la barre → suggestions live</li>
+        <li>Click une suggestion → ajoute en chip</li>
+        <li>Max 5 joueurs, click le ✕ d'une chip pour retirer</li>
+        <li>Radars superposés + tableau de stats avec deltas color-coded</li>
+      </ul>
+      <p class="muted" style="font-size:11px;">Use case : tu hésites entre 3 jungles — Compare les met côte-à-côte sur un seul radar pour voir qui a le meilleur tradeoff lane/objectif/vision selon ton style d'équipe.</p>
+    </div>
+
+    <div class="card howto-section" id="howto-admin">
+      <h3>⚙ Admin — pipelines + scheduler</h3>
+      <h4>Vue d'ensemble</h4>
+      <ul>
+        <li><strong>Hero metrics</strong> — 5 cartes : SoloQ players · Aggregates · Pros matched · Tournament matches · Pro teams</li>
+        <li><strong>Daily scheduler</strong> — config (heure, régions, tiers, players, games), rotation tier du jour, ▶ Trigger now</li>
+        <li><strong>Recent jobs</strong> — feed live des 10 derniers jobs (auto-refresh 5s) avec status pills</li>
+      </ul>
+      <h4>➕ Add player by Riot ID</h4>
+      <p>Tape un <code>gameName#tagLine</code> + region → ingère ce joueur peu importe son rang. Pipeline : account-v1 → summoner-v4 → ranked entries → match-v5 (last N matches) → CSS. Auto-add to watchlist optionnel.</p>
+      <p class="muted" style="font-size:11px;">Use case : tu connais un joueur par nom (ex-pro, ami du staff, amateur LFL) qui n'apparaît pas en Challenger. Add player → 30s plus tard son profil est dispo.</p>
+      <h4>🔁 SoloQ ingestion</h4>
+      <ul>
+        <li>Pills tier/region (multi-select avec gradient quand sélectionné)</li>
+        <li>Players per tier × Matches per player</li>
+        <li>Auto-route multi-clé si <code>RIOT_API_KEYS</code> défini dans <code>.env</code></li>
+        <li>Boutons : ▶ Run ingestion · 🧮 Recompute scores · 🔍 Resolve unknown names</li>
+      </ul>
+      <h4>🆔 Pro identification + 🏆 Tournament data</h4>
+      <ul>
+        <li><strong>Lolpros</strong> (preferred) · <strong>Leaguepedia</strong> quick (~75s) · <strong>Leaguepedia FULL</strong> (~6min, weekly)</li>
+        <li><strong>Tournament</strong> : ALL · 🇪🇺 EU · 🇰🇷 KR · 🇺🇸 NA · 🏅 Intl</li>
+      </ul>
+    </div>
+
+    <div class="card howto-section" id="howto-css">
+      <h3>🎯 Comprendre le CSS (Challenger Scouting Score)</h3>
+      <p>Score 0-100 par <code>(joueur, patch, rôle)</code>. Pipeline :</p>
+      <ol>
+        <li>Moyenne de chaque métrique (GD@15, KP, dmg share, KDA, vision, etc.)</li>
+        <li>Z-score vs la pool Challenger : <code>z = (x − μ_role) / σ_role</code></li>
+        <li>Conversion 0-100 : <code>score = clip(50 + 15·z, 0, 100)</code></li>
+        <li>Aggrégation en 8 catégories</li>
+        <li>Pondération par rôle (SUP→30% vision, ADC→30% damage, etc.)</li>
+        <li>Ajustements : <strong>sample factor</strong> (poids ↓ si &lt;50 games), <strong>smurf factor</strong> (×0.7 si level &lt;60), <strong>lobby-LP factor</strong> (×0.90 → ×1.10 selon LP moyen du lobby)</li>
+        <li>Percentile rank dans la cohorte (patch, rôle)</li>
+      </ol>
+      <h4>Labels visuels</h4>
+      <ul>
+        <li><strong>75+ Elite</strong> — top 5% · <strong>60-75 Strong</strong> — top quartile · <strong>45-60 Average</strong> — médian · <strong>&lt;45 Below avg</strong></li>
+      </ul>
+      <h4>📈 CSS trend chart</h4>
+      <p>Historique des CSS du joueur sur tous les patches (snapshots à chaque ingest). Headline auto si évolution notable. Permet de voir un Rising Star (50→70 en 3 patches) vs un joueur stable.</p>
+    </div>
+
+    <div class="card howto-section" id="howto-tips">
+      <h3>💡 Astuces qui font gagner du temps</h3>
+      <ul>
+        <li><strong>Deep links partageables</strong> — <code>#/player/&lt;puuid&gt;</code> · <code>#/team/G2</code> · <code>#/patch</code> · <code>#/leaderboard</code>. Copie l'URL pendant que tu navigues, partage Discord/Slack — le destinataire arrive directement sur la bonne vue.</li>
+        <li><strong>Group accounts by pro</strong> sur le ladder — bouton clé quand tu fouilles, sinon tu vois Caps + ses 4 smurfs en doublon.</li>
+        <li><strong>Markdown export</strong> du profil — quand tu pitch un prospect au coach. Plus propre qu'un screenshot.</li>
+        <li><strong>Patch impact</strong> 2 jours après un nouveau patch — repère les pépites qui ont surfé la nouvelle méta.</li>
+        <li><strong>Activity heatmap</strong> pour les transferts inter-régions — tu vois si le joueur KR joue à 4h du mat français → décalage horaire chiant pour un EU bootcamp.</li>
+        <li><strong>Click team chip</strong> partout — dans le ladder, dans le profil, dans le Watchlist → tu sautes sur la team page directement.</li>
+        <li><strong>Streak badge</strong> sur le profil — un "7W win streak 🔥🔥" est un signal hot, à scout maintenant pas dans 2 semaines.</li>
+        <li><strong>Trigger-now scheduler</strong> dans Admin — pour relancer le daily ingest tout de suite sans attendre 4h du matin.</li>
+      </ul>
+    </div>
+
+    <div class="card howto-section" id="howto-limits">
+      <h3>⚠ Limites à connaître</h3>
+      <ul>
+        <li><strong>Tournament data = unofficial lolesports API</strong> — Riot peut rotate la clé / changer les endpoints sans préavis. Si le sync casse, check <code>services/lolesports_client.py</code>.</li>
+        <li><strong>Pas de positions sur les minimaps tournament</strong> — lolesports n'expose pas les coordonnées x/y des kills. Minimap visible uniquement sur les matchs SoloQ (Riot match-v5).</li>
+        <li><strong>Personal API Keys expirent toutes les 24h</strong> — si tu vois des erreurs 401 sur les ingest, renouvelle la clé sur developer.riotgames.com.</li>
+        <li><strong>SQLite</strong> — confortable jusqu'à ~500MB. Si la DB grossit beaucoup, plan B PostgreSQL est prêt côté code (<code>docker-compose.yml</code>).</li>
+        <li><strong>CSS biaisé pour les low-elo</strong> — un Iron II ingéré aura ses stats z-scored vs la pool Challenger → score très bas. Normal, l'outil cible Challenger.</li>
+        <li><strong>Cross-region pas comparable</strong> — un 65 CSS KR ≠ 65 CSS EUW (chaque z-score est par région). Future feature : World CSS normalisé.</li>
+        <li><strong>Predictive ≠ Descriptive</strong> — CSS dit "qui est statistiquement bon en SoloQ", pas "qui réussira en LEC". Predictive scoring est dans la roadmap.</li>
+      </ul>
+    </div>
+
+    <div class="card howto-section">
+      <p class="muted" style="text-align:center;font-size:11px;margin:0;">
+        Outil interne, hébergement privé Cloudflare tunnel + Vercel. Pas de partage public.<br>
+        Questions / bugs → <a href="https://github.com/Alexis-Guyon/challenger-scouting/issues" target="_blank">GitHub issues</a>.
+      </p>
     </div>
   </section>
 </template>

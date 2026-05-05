@@ -194,10 +194,21 @@ async def _ingest_one_game(client: LolesportsClient, db: Session,
                 window = w
                 break
 
+    # Always fetch the no-arg window too — it returns the FIRST 10 frames
+    # of the game (game time 0:00–1:30). The first frame's rfc460Timestamp
+    # is the actual broadcast time when this specific game started, which
+    # is the anchor we need for @10 and @15 snapshot probes (without it,
+    # game 3 of a Bo3 gets snaps from broadcast +13min = mid-game-1).
+    start_window = await client.get_window(game_id)
+    game_start_dt = None
+    if start_window and start_window.get("frames"):
+        first_ts_str = start_window["frames"][0].get("rfc460Timestamp")
+        game_start_dt = _parse_iso(first_ts_str) if first_ts_str else None
+
     if not window or not window.get("frames"):
-        # Last resort: no-arg call (returns first 10 frames of the game,
-        # often all zeros — caught by the ghost detection below).
-        window = await client.get_window(game_id)
+        # Use the no-arg window as last resort (will be flagged ghost below
+        # if its stats are all zero, which is the common case).
+        window = start_window
     if not window or not window.get("frames"):
         return False, "no_window_data"
 
@@ -222,14 +233,19 @@ async def _ingest_one_game(client: LolesportsClient, db: Session,
         )
     is_placeholder = _zero_check == 0
     # The last window only spans 100 s; estimate full game duration from the
-    # rfc460Timestamp of the last frame minus broadcast startTime (less ~3 min
-    # for draft + load). Bounded to [15 min, 80 min] to filter outliers.
+    # rfc460Timestamp of the last frame minus the GAME's broadcast start
+    # (not the event broadcast start, which can be 2-3h earlier for game
+    # 2/3 of a Bo3). Bounded to [15 min, 80 min] to filter outliers.
     duration_sec = last["duration_sec"]
-    if window.get("frames") and bc_start:
+    duration_anchor = game_start_dt or bc_start
+    if window.get("frames") and duration_anchor:
         last_ts_str = window["frames"][-1].get("rfc460Timestamp")
         last_ts = _parse_iso(last_ts_str) if last_ts_str else None
         if last_ts:
-            estimated = int((last_ts - bc_start).total_seconds() - 180)  # subtract draft+load
+            estimated = int((last_ts - duration_anchor).total_seconds())
+            # Subtract the draft/load buffer only when anchor=bc_start
+            if duration_anchor is bc_start:
+                estimated -= 180
             if 15 * 60 <= estimated <= 80 * 60:
                 duration_sec = estimated
 
@@ -271,10 +287,16 @@ async def _ingest_one_game(client: LolesportsClient, db: Session,
 
     snap_10: dict[int, dict] = {}
     snap_15: dict[int, dict] = {}
-    if bc_start:
-        # +13 = ~3 min draft/loading + 10 in-game
-        target_10 = bc_start + timedelta(minutes=13)
-        target_15 = bc_start + timedelta(minutes=18)
+    # Anchor @10 and @15 from the GAME's actual broadcast start time
+    # (frames[0] of the no-arg window), not from the broadcast event start.
+    # This makes the snaps correct for game 2/3 of a Bo3 — without it,
+    # we'd snap during game 1 broadcast frames and report 0/0 for everyone
+    # in the later games. Falls back to bc_start + 3min draft buffer when
+    # the game-start anchor is unavailable.
+    snap_anchor = game_start_dt or (bc_start + timedelta(minutes=3) if bc_start else None)
+    if snap_anchor:
+        target_10 = snap_anchor + timedelta(minutes=10)
+        target_15 = snap_anchor + timedelta(minutes=15)
         try:
             w10 = await client.get_window(game_id, round_to_10s_iso(target_10))
             snap_10 = _capture_snap(w10, target_10)

@@ -1842,3 +1842,81 @@ body:has(.match-modal.open) { overflow: hidden; }
   padding-top: 12px;
   border-top: 1px dashed var(--line-soft);
 }
+
+/* ---------- Match modal: gold-diff + minimap ---------- */
+.match-events-strip {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.event-strip-row {
+  position: relative;
+  height: 22px;
+  border-radius: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  overflow: visible;
+}
+.event-strip-blue::before,
+.event-strip-red::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 50%; transform: translateY(-50%);
+  width: 64px; height: 14px;
+  border-radius: 2px;
+  font-size: 9px;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: rgba(255,255,255,0.15);
+  pointer-events: none;
+}
+.event-strip-blue { background: linear-gradient(90deg, rgba(110,168,255,0.10) 0%, rgba(110,168,255,0.03) 100%); }
+.event-strip-red  { background: linear-gradient(90deg, rgba(255,139,139,0.10) 0%, rgba(255,139,139,0.03) 100%); }
+.event-dot {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: currentColor;
+  cursor: help;
+  transition: transform 0.1s var(--ease);
+}
+.event-strip-blue .event-dot { color: #6ea8ff; box-shadow: 0 0 4px rgba(110,168,255,0.6); }
+.event-strip-red  .event-dot { color: #ff8b8b; box-shadow: 0 0 4px rgba(255,139,139,0.6); }
+.event-dot:hover { transform: translate(-50%, -50%) scale(1.5); z-index: 2; }
+
+.minimap-wrap {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: 4px auto 8px;
+}
+.minimap-wrap canvas {
+  width: 100%;
+  max-width: 380px;
+  height: auto;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+}
+.minimap-legend {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  flex-wrap: wrap;
+  padding: 4px 8px;
+}
+.legend-dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 999px;
+  margin: 0 4px 0 0;
+  vertical-align: middle;
+}
+.legend-blue { background: #6ea8ff; box-shadow: 0 0 4px rgba(110,168,255,0.6); }
+.legend-red  { background: #ff8b8b; box-shadow: 0 0 4px rgba(255,139,139,0.6); }

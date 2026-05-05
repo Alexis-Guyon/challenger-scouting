@@ -78,7 +78,13 @@ def _extract_gold_curves(timeline: dict, by_pid: dict[int, dict]) -> list[dict]:
 
 
 def _extract_events(timeline: dict, by_pid: dict[int, dict]) -> list[dict]:
-    """Notable kill / objective events. Limited to the most informative types."""
+    """Notable kill / objective events. Limited to the most informative types.
+
+    Includes `position: {x, y}` on CHAMPION_KILL events when available — the
+    Summoner's Rift coordinate system runs 0-15000 on both axes; (0,0) is
+    the bottom-left corner (blue base side). The frontend uses these to
+    paint a kill-position minimap.
+    """
     out = []
     for frame in timeline.get("info", {}).get("frames", []):
         for ev in frame.get("events", []):
@@ -88,6 +94,7 @@ def _extract_events(timeline: dict, by_pid: dict[int, dict]) -> list[dict]:
                 killer = by_pid.get(ev.get("killerId"))
                 victim = by_pid.get(ev.get("victimId"))
                 assists = [by_pid.get(a, {}).get("summoner_name") for a in ev.get("assistingParticipantIds", [])]
+                pos = ev.get("position") or {}
                 out.append({
                     "type": "kill",
                     "ts": ts,
@@ -97,9 +104,11 @@ def _extract_events(timeline: dict, by_pid: dict[int, dict]) -> list[dict]:
                     "victim_champion": victim["champion"] if victim else None,
                     "assists": [a for a in assists if a],
                     "team_id": killer["team_id"] if killer else None,
+                    "position": {"x": pos.get("x"), "y": pos.get("y")} if pos else None,
                 })
             elif t == "ELITE_MONSTER_KILL":
                 killer = by_pid.get(ev.get("killerId"))
+                pos = ev.get("position") or {}
                 out.append({
                     "type": "objective",
                     "subtype": ev.get("monsterType", "?").lower(),
@@ -108,6 +117,7 @@ def _extract_events(timeline: dict, by_pid: dict[int, dict]) -> list[dict]:
                     "killer": killer["summoner_name"] if killer else None,
                     "killer_champion": killer["champion"] if killer else None,
                     "team_id": ev.get("killerTeamId") or (killer["team_id"] if killer else None),
+                    "position": {"x": pos.get("x"), "y": pos.get("y")} if pos else None,
                 })
             elif t == "BUILDING_KILL":
                 out.append({
@@ -119,6 +129,30 @@ def _extract_events(timeline: dict, by_pid: dict[int, dict]) -> list[dict]:
                     "team_id": ev.get("teamId"),
                 })
     return out
+
+
+def _team_gold_diff(gold_curves: list[dict]) -> dict:
+    """Sum per-team gold across participants, return blue-minus-red diff
+    series + the per-team totals (for stacked area charts).
+
+    Returns:
+      { "minutes": [...], "blue_total": [...], "red_total": [...],
+        "diff": [...]  # blue - red, positive = blue ahead }
+    """
+    if not gold_curves:
+        return {"minutes": [], "blue_total": [], "red_total": [], "diff": []}
+    minutes = gold_curves[0].get("minutes") or []
+    blue_total = [0] * len(minutes)
+    red_total = [0] * len(minutes)
+    for gc in gold_curves:
+        gold = gc.get("gold") or []
+        team = gc.get("team_id")
+        bucket = blue_total if team == 100 else red_total
+        for i, g in enumerate(gold):
+            if i < len(bucket):
+                bucket[i] += int(g or 0)
+    diff = [b - r for b, r in zip(blue_total, red_total)]
+    return {"minutes": minutes, "blue_total": blue_total, "red_total": red_total, "diff": diff}
 
 
 @router.get("/{match_id}/timeline")
@@ -140,7 +174,13 @@ async def match_timeline(
         raise HTTPException(404, "match not in DB — ingest it first")
 
     # Riot match-v5 region routing happens via the RiotClient host config.
-    async with RiotClient() as client:
+    # Prefer the first multi-key (RIOT_API_KEYS) over the single RIOT_API_KEY
+    # — Personal Keys expire every 24h, while users typically rotate the
+    # multi-key list more proactively.
+    from ..services.ingestion import _resolve_keys
+    keys = _resolve_keys()
+    api_key = keys[0] if keys else None
+    async with RiotClient(api_key=api_key) as client:
         try:
             match_data = await client.match(match_id)
             timeline = await client.match_timeline(match_id)
@@ -148,6 +188,7 @@ async def match_timeline(
             raise HTTPException(502, f"Riot API failed: {exc}")
 
     by_pid = _participant_role_map(match_data)
+    gold_curves = _extract_gold_curves(timeline, by_pid)
     payload = {
         "match_id": match_id,
         "duration_min": match_data.get("info", {}).get("gameDuration", 0) // 60,
@@ -155,13 +196,11 @@ async def match_timeline(
         "queue_id": match_data.get("info", {}).get("queueId"),
         "blue_win": any(t.get("teamId") == 100 and t.get("win") for t in match_data.get("info", {}).get("teams", [])),
         "participants": [
-            {
-                **info,
-                "participant_id": pid,
-            }
+            {**info, "participant_id": pid}
             for pid, info in by_pid.items()
         ],
-        "gold_curves": _extract_gold_curves(timeline, by_pid),
+        "gold_curves": gold_curves,
+        "team_gold_diff": _team_gold_diff(gold_curves),
         "events": _extract_events(timeline, by_pid),
     }
     _TIMELINE_CACHE[match_id] = (payload, now + _CACHE_TTL_SEC)

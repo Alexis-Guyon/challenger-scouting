@@ -684,6 +684,85 @@ async function loadNotes(puuid) {
 
 /* ---------------- MATCH DEEP-DIVE MODAL ---------------- */
 let _matchChart = null;
+let _matchDiffChart = null;
+
+// Summoner's Rift minimap from Community Dragon CDN. Loaded once,
+// cached in <img> for subsequent matches.
+const _RIFT_MINIMAP_URL = 'https://raw.communitydragon.org/latest/game/data/maps/shipping/map11/2dlevelminimap.png';
+let _riftImg = null;
+function _loadRiftImg() {
+  if (_riftImg) return Promise.resolve(_riftImg);
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => { _riftImg = img; resolve(img); };
+    img.onerror = () => resolve(null);  // fall back to plain background
+    img.src = _RIFT_MINIMAP_URL;
+  });
+}
+
+/**
+ * Paint kill positions on a Summoner's Rift minimap canvas.
+ *
+ * Riot's coordinate system: 0–15000 on both X and Y, with (0,0) at the
+ * BOTTOM-LEFT (blue base side). HTML5 canvas has (0,0) at top-left, so
+ * we flip Y. We over-saturate the dot colors to make them pop on the
+ * dark map background.
+ */
+async function drawMinimap(canvasId, events) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const { width: W, height: H } = canvas;
+
+  // Background — try the official rift image, fall back to a dark gradient
+  const img = await _loadRiftImg();
+  if (img) {
+    ctx.drawImage(img, 0, 0, W, H);
+    // Slight darkening so kill dots stand out
+    ctx.fillStyle = 'rgba(6, 8, 12, 0.30)';
+    ctx.fillRect(0, 0, W, H);
+  } else {
+    const grad = ctx.createRadialGradient(W/2, H/2, 30, W/2, H/2, W);
+    grad.addColorStop(0, '#1a2030');
+    grad.addColorStop(1, '#0a0c11');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+    // Light grid to hint at lanes
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = 1;
+    for (let g = 0; g < W; g += W / 6) {
+      ctx.beginPath(); ctx.moveTo(g, 0); ctx.lineTo(g, H); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, g); ctx.lineTo(W, g); ctx.stroke();
+    }
+  }
+
+  // Plot kills. Riot map space is 0..MAX on both axes (typically ~15000).
+  // We use 15000 as a safe upper bound; clamp to canvas regardless.
+  const MAX = 15000;
+  const kills = (events || []).filter(e => e.type === 'kill' && e.position && e.position.x != null);
+  for (const ev of kills) {
+    const px = (ev.position.x / MAX) * W;
+    const py = H - (ev.position.y / MAX) * H;  // flip Y
+    const cx = Math.max(4, Math.min(W - 4, px));
+    const cy = Math.max(4, Math.min(H - 4, py));
+    const isBlue = ev.team_id === 100;
+    const color = isBlue ? '#6ea8ff' : '#ff8b8b';
+    // Glow
+    ctx.beginPath();
+    ctx.arc(cx, cy, 7, 0, Math.PI * 2);
+    ctx.fillStyle = isBlue ? 'rgba(110,168,255,0.20)' : 'rgba(255,139,139,0.20)';
+    ctx.fill();
+    // Solid dot
+    ctx.beginPath();
+    ctx.arc(cx, cy, 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+}
 
 async function openMatchModal(matchId) {
   const modal = document.getElementById('match-modal');
@@ -741,20 +820,134 @@ function renderMatchModal(data) {
       </div>
     </div>
 
-    <div class="card" style="margin-top:14px;">
-      <h4 class="muted-h4">Gold curves (totals per team)</h4>
-      <canvas id="match-gold-chart" height="220"></canvas>
+    <div class="grid-2" style="margin-top:14px;">
+      <div class="card">
+        <h4 class="muted-h4">📊 Gold advantage (team) <span class="muted" style="font-size:10px;font-weight:400;">blue when blue leads, red when behind</span></h4>
+        <canvas id="match-golddiff-chart" height="180"></canvas>
+        <div class="match-events-strip">
+          <div class="event-strip-row event-strip-blue" id="match-events-blue"></div>
+          <div class="event-strip-row event-strip-red"  id="match-events-red"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h4 class="muted-h4">🗺 Kill positions <span class="muted" style="font-size:10px;font-weight:400;">where each team scored</span></h4>
+        <div class="minimap-wrap">
+          <canvas id="match-minimap" width="380" height="380"></canvas>
+        </div>
+        <div class="minimap-legend">
+          <span class="legend-dot legend-blue"></span> Blue team kills
+          <span class="legend-dot legend-red" style="margin-left:14px;"></span> Red team kills
+          <span class="muted" style="margin-left:14px;font-size:10px;">${(data.events || []).filter(e => e.type === 'kill' && e.position).length} kills mapped</span>
+        </div>
+      </div>
     </div>
 
+    <details class="card" style="margin-top:14px;">
+      <summary style="cursor:pointer;font-weight:600;font-size:13px;color:var(--text);">Per-participant gold curves</summary>
+      <canvas id="match-gold-chart" height="220" style="margin-top:8px;"></canvas>
+    </details>
+
     <div class="card" style="margin-top:14px;">
-      <h4 class="muted-h4">Events timeline</h4>
-      <div style="max-height:300px;overflow-y:auto;">
+      <h4 class="muted-h4">📜 Events timeline</h4>
+      <div style="max-height:280px;overflow-y:auto;">
         ${data.events.map(ev => renderEvent(ev)).join('')}
       </div>
     </div>
   `;
 
-  // Compute per-team gold sum at each minute
+  // ---------- Gold-diff filled chart (the hero visualization) ----------
+  const tgd = data.team_gold_diff || { minutes: [], diff: [] };
+  const diffMins = tgd.minutes;
+  const diffData = tgd.diff;
+
+  // Two datasets: positive area (blue leads) and negative area (red leads).
+  // Each fills to zero, so the chart looks like a wave that flips colors.
+  const blueLead = diffData.map(d => d >= 0 ? d : null);
+  const redLead  = diffData.map(d => d < 0 ? d : null);
+
+  if (_matchDiffChart) _matchDiffChart.destroy();
+  _matchDiffChart = new Chart(document.getElementById('match-golddiff-chart'), {
+    type: 'line',
+    data: {
+      labels: diffMins.map(m => m + ':00'),
+      datasets: [
+        {
+          label: 'Blue ahead',
+          data: blueLead,
+          borderColor: '#6ea8ff',
+          backgroundColor: 'rgba(110,168,255,0.25)',
+          fill: 'origin',
+          tension: 0.25,
+          pointRadius: 2,
+          pointHoverRadius: 5,
+          spanGaps: false,
+        },
+        {
+          label: 'Red ahead',
+          data: redLead,
+          borderColor: '#ff8b8b',
+          backgroundColor: 'rgba(255,139,139,0.25)',
+          fill: 'origin',
+          tension: 0.25,
+          pointRadius: 2,
+          pointHoverRadius: 5,
+          spanGaps: false,
+        },
+      ],
+    },
+    options: {
+      scales: {
+        x: { grid: { color: '#2a2e37' }, ticks: { color: '#8a8f99', maxTicksLimit: 8 } },
+        y: {
+          grid: { color: '#2a2e37' },
+          ticks: {
+            color: '#ebeced',
+            callback: (v) => Math.abs(v) >= 1000 ? (v/1000).toFixed(0) + 'k' : v,
+          },
+        },
+      },
+      plugins: {
+        legend: { labels: { color: '#ebeced' } },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const v = ctx.parsed.y;
+              if (v == null) return '';
+              return v >= 0
+                ? `+${(v/1000).toFixed(1)}k blue ahead`
+                : `${(v/1000).toFixed(1)}k red ahead`;
+            },
+          },
+        },
+      },
+    },
+  });
+
+  // ---------- Events strip (objectives + kills as bubbles by team) ----------
+  const stripBlue = document.getElementById('match-events-blue');
+  const stripRed  = document.getElementById('match-events-red');
+  if (stripBlue && stripRed && (data.events || []).length) {
+    const totalSec = (data.duration_min || 0) * 60 || (diffMins[diffMins.length - 1] || 30) * 60;
+    const renderStrip = (teamId, container) => {
+      const evs = (data.events || []).filter(e => e.team_id === teamId);
+      const html = evs.map(ev => {
+        const pct = Math.min(100, Math.max(0, (ev.ts / totalSec) * 100));
+        const isObj = ev.type === 'objective' || ev.type === 'tower';
+        const size = isObj ? 11 : 6;
+        const title = isObj ? `${ev.subtype || ev.type} @ ${Math.floor(ev.ts/60)}:${String(ev.ts%60).padStart(2,'0')}`
+                            : `${ev.killer_champion || '?'} → ${ev.victim_champion || '?'}`;
+        return `<span class="event-dot" style="left:${pct}%;width:${size}px;height:${size}px;" title="${title}"></span>`;
+      }).join('');
+      container.innerHTML = html || '<span class="muted" style="font-size:10px;padding-left:8px;">no events</span>';
+    };
+    renderStrip(100, stripBlue);
+    renderStrip(200, stripRed);
+  }
+
+  // ---------- Kill-position minimap ----------
+  drawMinimap('match-minimap', data.events || []);
+
+  // ---------- Per-participant gold (collapsed by default — kept for power users) ----------
   const minutes = data.gold_curves[0]?.minutes || [];
   const blueGold = minutes.map(() => 0);
   const redGold  = minutes.map(() => 0);
@@ -763,24 +956,20 @@ function renderMatchModal(data) {
     gc.gold.forEach((g, i) => { arr[i] += g; });
   });
 
-  const goldDiff = minutes.map((_, i) => blueGold[i] - redGold[i]);
-
   if (_matchChart) _matchChart.destroy();
   _matchChart = new Chart(document.getElementById('match-gold-chart'), {
     type: 'line',
     data: {
       labels: minutes.map(m => m + 'm'),
       datasets: [
-        { label: 'Blue gold', data: blueGold, borderColor: '#6ea8ff', backgroundColor: 'rgba(110,168,255,0.10)', fill: false, tension: 0.2 },
-        { label: 'Red gold',  data: redGold,  borderColor: '#ff8b8b', backgroundColor: 'rgba(255,139,139,0.10)', fill: false, tension: 0.2 },
-        { label: 'Blue lead', data: goldDiff, borderColor: '#f59e0b', borderDash: [4,4], yAxisID: 'y2', fill: false, tension: 0.2 },
+        { label: 'Blue total', data: blueGold, borderColor: '#6ea8ff', backgroundColor: 'rgba(110,168,255,0.08)', fill: false, tension: 0.2 },
+        { label: 'Red total',  data: redGold,  borderColor: '#ff8b8b', backgroundColor: 'rgba(255,139,139,0.08)', fill: false, tension: 0.2 },
       ],
     },
     options: {
       scales: {
         x: { grid: { color: '#2a2e37' }, ticks: { color: '#8a8f99' } },
-        y: { grid: { color: '#2a2e37' }, ticks: { color: '#ebeced' }, title: { display: true, text: 'Total gold', color: '#8a8f99' } },
-        y2: { position: 'right', grid: { display: false }, ticks: { color: '#f59e0b' }, title: { display: true, text: 'Blue − Red', color: '#f59e0b' } },
+        y: { grid: { color: '#2a2e37' }, ticks: { color: '#ebeced' } },
       },
       plugins: { legend: { labels: { color: '#ebeced' } } },
     },

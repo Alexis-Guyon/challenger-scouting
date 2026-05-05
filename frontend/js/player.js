@@ -686,18 +686,27 @@ async function loadNotes(puuid) {
 let _matchChart = null;
 let _matchDiffChart = null;
 
-// Summoner's Rift minimap from Community Dragon CDN. Loaded once,
-// cached in <img> for subsequent matches.
-const _RIFT_MINIMAP_URL = 'https://raw.communitydragon.org/latest/game/data/maps/shipping/map11/2dlevelminimap.png';
+// Summoner's Rift minimap. Primary source = the LoL Wiki rendering
+// (clean stylized look, lanes + river + bases visible). Fallback to the
+// Community Dragon raw asset if the Wiki CDN fails. We DON'T request
+// `crossOrigin = "anonymous"` because we never need pixel readback —
+// the canvas being "tainted" is fine, we only draw on top.
+const _RIFT_MINIMAP_URLS = [
+  'https://wiki.leagueoflegends.com/en-us/images/thumb/Summoner%27s_Rift_Minimap.png/300px-Summoner%27s_Rift_Minimap.png?332ac',
+  'https://raw.communitydragon.org/latest/game/data/maps/shipping/map11/2dlevelminimap.png',
+];
 let _riftImg = null;
 function _loadRiftImg() {
   if (_riftImg) return Promise.resolve(_riftImg);
   return new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => { _riftImg = img; resolve(img); };
-    img.onerror = () => resolve(null);  // fall back to plain background
-    img.src = _RIFT_MINIMAP_URL;
+    const tryNext = (i) => {
+      if (i >= _RIFT_MINIMAP_URLS.length) { resolve(null); return; }
+      const img = new Image();
+      img.onload = () => { _riftImg = img; resolve(img); };
+      img.onerror = () => tryNext(i + 1);
+      img.src = _RIFT_MINIMAP_URLS[i];
+    };
+    tryNext(0);
   });
 }
 
@@ -719,8 +728,10 @@ async function drawMinimap(canvasId, events) {
   const img = await _loadRiftImg();
   if (img) {
     ctx.drawImage(img, 0, 0, W, H);
-    // Slight darkening so kill dots stand out
-    ctx.fillStyle = 'rgba(6, 8, 12, 0.30)';
+    // Very light darkening — the wiki minimap is already darkish, but a
+    // 12% black overlay helps the kill dots pop without obscuring the
+    // lanes/river structure.
+    ctx.fillStyle = 'rgba(6, 8, 12, 0.12)';
     ctx.fillRect(0, 0, W, H);
   } else {
     const grad = ctx.createRadialGradient(W/2, H/2, 30, W/2, H/2, W);

@@ -83,6 +83,10 @@ async def _ingest_league_entries(
         )
         p.region = client.platform
         p.account_level = summ.get("summonerLevel", 0) if summ else 0
+        # Account portrait (Community Dragon renders it by id — no patch needed).
+        # Free to grab: it's on the same summoner-v4 payload as summonerLevel.
+        if summ and summ.get("profileIconId") is not None:
+            p.profile_icon_id = summ.get("profileIconId")
         p.last_updated = now
 
         snap = RankSnapshot(

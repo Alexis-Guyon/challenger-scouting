@@ -8,7 +8,27 @@ function showApp() {
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('app-shell').style.display = 'block';
   const u = currentUser();
-  if (u) document.getElementById('user-label').textContent = `${u.username} · ${u.org}`;
+  if (u) {
+    document.getElementById('user-label').textContent = u.username;
+    const org = document.querySelector('.user-chip-org');
+    if (org) org.textContent = (u.org || 'workspace').toUpperCase();
+    const av = document.getElementById('user-avatar');
+    if (av) av.textContent = (u.username || '?').slice(0, 2).toUpperCase();
+  }
+  refreshIcons();
+  loadSidebarPatch();
+}
+
+// Populate the sidebar footer with the most-recent patch (best-effort).
+async function loadSidebarPatch() {
+  const el = document.getElementById('sidebar-patch');
+  if (!el) return;
+  try {
+    const list = await API('/players/patches');
+    if (list && list.length) {
+      el.textContent = list[0].patch;
+    }
+  } catch { /* leave placeholder */ }
 }
 
 document.getElementById('login-form').addEventListener('submit', async (e) => {
@@ -145,6 +165,7 @@ function setView(name, arg) {
   }
   app.innerHTML = '';
   app.appendChild(tpl.content.cloneNode(true));
+  refreshIcons();
 
   // Update the URL hash so the view is shareable. Player navigation
   // sometimes happens with arg=undefined (caller already set

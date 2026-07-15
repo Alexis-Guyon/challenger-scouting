@@ -25,6 +25,8 @@ NEW_COLUMNS = [
     # Smurf detector ML/rule-based score
     ("players", "smurf_score", "FLOAT DEFAULT 0.0"),
     ("players", "smurf_signals", "TEXT"),
+    # Riot summoner-v4 profileIconId → account portrait in ladder + profile
+    ("players", "profile_icon_id", "INTEGER"),
     # Champion-specific CSS
     ("champion_pool", "role", "VARCHAR"),
     ("champion_pool", "avg_kp", "FLOAT DEFAULT 0.0"),
@@ -69,6 +71,29 @@ NEW_COLUMNS = [
 ]
 
 
+# Composite / covering indexes that make the leaderboard (/players) and
+# /champions endpoints fast. Single-column indexes on these tables already
+# exist via the models; these cover the specific multi-column access patterns
+# those two hot endpoints hit. Idempotent (CREATE INDEX IF NOT EXISTS).
+PERF_INDEXES = [
+    # /players: the per-puuid "primary aggregate" subquery filters on
+    # (games_played, role, patch) then groups by puuid picking max(games,id).
+    ("ix_pa_games", "player_aggregates", "(games_played)"),
+    ("ix_pa_role_patch_games", "player_aggregates", "(role, patch, games_played)"),
+    ("ix_pa_puuid_games_id", "player_aggregates", "(puuid, games_played, id)"),
+    # /players: correlated EXISTS on a ranked tier — (puuid, tier) lets it be
+    # an index-only probe instead of a per-row snapshot scan.
+    ("ix_rs_puuid_tier", "rank_snapshots", "(puuid, tier)"),
+    # /champions: GROUP BY champion_id, champion_name, role with
+    # COUNT(DISTINCT puuid) + SUM(...). This covering index (ordered by the
+    # GROUP BY key, carrying every summed column) lets SQLite stream the
+    # aggregation index-only — cuts the endpoint from ~14s to sub-second.
+    ("ix_cp_cover", "champion_pool",
+     "(champion_id, champion_name, role, puuid, games, wins, avg_kda, "
+     "champion_css, has_champion_baseline, patch)"),
+]
+
+
 def main():
     insp = inspect(engine)
     # Make sure newly-defined tables exist
@@ -85,6 +110,20 @@ def main():
                 continue
             print(f"  add  {table}.{col} {ddl}")
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
+
+        # Performance indexes (idempotent)
+        for name, table, cols in PERF_INDEXES:
+            if not insp.has_table(table):
+                print(f"  skip index {name} — {table} not present")
+                continue
+            print(f"  idx  {name} ON {table} {cols}")
+            conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {table} {cols}"))
+
+    # Refresh planner statistics so SQLite picks good join orders for the
+    # multi-subquery leaderboard query. Cheap and safe to re-run.
+    with engine.begin() as conn:
+        print("  analyze …")
+        conn.execute(text("ANALYZE"))
     print("Done.")
 
 

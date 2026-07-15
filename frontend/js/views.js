@@ -25,6 +25,12 @@ async function toggleWatch(puuid, btn) {
 }
 
 async function loadLeaderboard() {
+  // Immediate loading feedback — a cold query can take ~0.5–1s, so show
+  // shimmer skeleton rows the instant Apply/paging is triggered.
+  const _tb = document.querySelector('#lb-table tbody');
+  if (_tb) _tb.innerHTML = Array.from({ length: 10 })
+    .map(() => '<tr class="lb-skel"><td colspan="17"><span class="skel-bar"></span></td></tr>').join('');
+
   const role = document.getElementById('f-role').value;
   const region = document.getElementById('f-region')?.value || '';
   const tier = document.getElementById('f-tier').value;
@@ -36,6 +42,11 @@ async function loadLeaderboard() {
   const maxAge = document.getElementById('f-maxage').value;
   const residency = document.getElementById('f-residency').value;
   const contract = document.getElementById('f-contract').value;
+
+  // 🧬 Group accounts by pro — now handled SERVER-SIDE (across the whole
+  // ladder, not just the current page). We just pass the flag and read the
+  // account_count / accounts fields the API returns on each primary row.
+  const groupOn = document.getElementById('lb-group-toggle')?.checked;
 
   const params = new URLSearchParams();
   if (role) params.set('role', role);
@@ -53,77 +64,47 @@ async function loadLeaderboard() {
   if (maxAge) params.set('max_age', maxAge);
   if (residency) params.set('residency', residency);
   if (contract) params.set('contract_within_days', contract);
+  if (groupOn) params.set('group_accounts', 'true');
 
   await refreshWatchedSet();
   let resp = await API('/players?' + params);
   let data = resp.items || [];
   const total = resp.total ?? data.length;
+  const groupedHidden = resp.collapsed || 0;
+
+  const subEl = document.getElementById('lb-page-sub');
+  if (subEl) {
+    const regLabel = region ? (REGION_LABELS[region.toLowerCase()] || region.toUpperCase()) : 'All regions';
+    subEl.innerHTML = `${regLabel} · ranked by CSS · <b>${total.toLocaleString()} ${groupOn ? 'players' : 'aggregates'}</b>`;
+  }
 
   // Client-side post-filter for "amateur only" (no LP entry) — note this can shrink the visible page
   if (proStatus === 'amateur') data = data.filter(r => !r.meta);
 
-  // 🧬 Account grouping by pro — collapse all of a pro's accounts into
-  // one line with a "+N accounts" badge. Each row's group key is its
-  // Lolpros slug (stable across all of a pro's Riot accounts) when known,
-  // otherwise the puuid (each account stays its own row).
-  const groupOn = document.getElementById('lb-group-toggle')?.checked;
-  let groupedHidden = 0;
+  // Map the server's grouping fields onto the names the row renderer uses.
   if (groupOn) {
-    const groups = new Map();
-    for (const row of data) {
-      const key = row.meta?.lolpros_slug || row.puuid;
-      const cur = groups.get(key);
-      // Keep the row with the higher CSS as the "primary" account display.
-      // Falls back to games_played as tiebreaker.
-      const score = (row.css_score ?? 0) * 1000 + (row.games_played ?? 0);
-      if (!cur || score > cur._score) {
-        const accounts = cur ? cur._accounts : [];
-        accounts.push(row);
-        groups.set(key, { ...row, _score: score, _accounts: accounts.concat(cur ? [] : []) });
-      } else {
-        cur._accounts.push(row);
+    data.forEach(r => {
+      if (r.account_count && r.accounts) {
+        r._account_count = r.account_count;
+        r._siblings = r.accounts;
       }
-    }
-    // Re-emit in original order, dropping non-primaries; track the
-    // sibling list per primary so we can render the popover.
-    const primaries = new Map();
-    for (const [k, v] of groups.entries()) {
-      // The "current row" of v is the primary (last-set winner). Build
-      // its full siblings list (including itself, sorted by CSS desc).
-      const siblings = [];
-      for (const r of data) {
-        const rk = r.meta?.lolpros_slug || r.puuid;
-        if (rk === k) siblings.push(r);
-      }
-      siblings.sort((a, b) => (b.css_score ?? 0) - (a.css_score ?? 0));
-      // Primary = highest-CSS sibling (stable).
-      v.__primary_puuid = siblings[0].puuid;
-      v.__siblings = siblings;
-      primaries.set(k, v);
-    }
-    const before = data.length;
-    data = data.filter(r => {
-      const k = r.meta?.lolpros_slug || r.puuid;
-      const p = primaries.get(k);
-      return p && p.__primary_puuid === r.puuid;
-    }).map(r => {
-      const k = r.meta?.lolpros_slug || r.puuid;
-      const p = primaries.get(k);
-      return { ...r, _account_count: p.__siblings.length, _siblings: p.__siblings };
     });
-    groupedHidden = before - data.length;
   }
 
   const tbody = document.querySelector('#lb-table tbody');
   tbody.innerHTML = '';
+  document.getElementById('lb-table')?.classList.remove('lb-empty');
 
-  // Update / inject the pagination + counter row under the filters bar
+  // Update / inject the pagination footer — sits BELOW the table (as a footer
+  // attached to the table card), matching the design.
   let pager = document.getElementById('lb-pager');
   if (!pager) {
     pager = document.createElement('div');
     pager.id = 'lb-pager';
-    pager.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin:0 0 10px;font-size:12px;color:var(--muted);';
-    document.querySelector('.filters').after(pager);
+    pager.className = 'lb-pager';
+    const wrap = document.querySelector('#lb-table')?.closest('.table-wrap');
+    if (wrap) wrap.after(pager);
+    else document.querySelector('.filters').after(pager);
   }
   const startIdx = _lbOffset + 1;
   const endIdx = _lbOffset + data.length;
@@ -144,7 +125,27 @@ async function loadLeaderboard() {
   document.getElementById('lb-last').onclick  = () => { _lbOffset = (totalPages - 1) * _lbPageSize; loadLeaderboard(); };
 
   if (!data.length) {
-    tbody.innerHTML = `<tr><td colspan="17" class="muted" style="text-align:center;padding:30px;">No players match these filters.</td></tr>`;
+    document.getElementById('lb-table')?.classList.add('lb-empty');
+    tbody.innerHTML = `<tr><td colspan="17" style="padding:0;border:0;">
+      <div class="empty-state" style="border:0;">
+        <span data-lucide="search-x"></span>
+        <div class="empty-state-title">No players match these filters.</div>
+        <div class="empty-state-sub">Widen the region, lower Min games, or clear the quick filters.</div>
+        <button class="quick-pill" id="lb-empty-clear" style="margin-top:4px;color:var(--violet);border-color:var(--violet-line);background:var(--violet-soft);">Clear filters</button>
+      </div>
+    </td></tr>`;
+    refreshIcons();
+    document.getElementById('lb-empty-clear')?.addEventListener('click', () => {
+      document.getElementById('f-prostatus').value = '';
+      document.getElementById('f-maxage').value = '';
+      document.getElementById('f-contract').value = '';
+      document.getElementById('f-residency').value = '';
+      document.getElementById('f-smurf').value = '';
+      document.getElementById('f-patch').value = '';
+      document.querySelectorAll('.quick-pill.active').forEach(b => b.classList.remove('active'));
+      _lbOffset = 0;
+      loadLeaderboard();
+    });
     return;
   }
   data.forEach((row, i) => {
@@ -153,28 +154,40 @@ async function loadLeaderboard() {
     tr.className = 'lb-row';
     tr.dataset.puuid = row.puuid;
     const accountBadge = row._account_count && row._account_count > 1
-      ? ` <span class="account-count-badge" data-puuid="${row.puuid}" title="Click to see all ${row._account_count} accounts of this pro">+${row._account_count - 1} accounts</span>`
+      ? `<span class="account-count-badge" data-puuid="${row.puuid}" title="Click to see all ${row._account_count} accounts of this pro">+${row._account_count - 1} accounts</span>`
       : '';
+    const name = row.summoner_name || '(unknown)';
+    const initial = (name.replace(/^[^A-Za-z0-9]*/, '')[0] || name[0] || '?').toUpperCase();
     tr.innerHTML = `
       <td>${_lbOffset + i + 1}</td>
-      <td><strong>${row.summoner_name || '(unknown)'}</strong> ${smurfBadge(row)}${risingBadge(row)}${accountBadge}</td>
+      <td>
+        <div class="lb-player">
+          <span class="lb-avatar">${initial}${row.profile_icon_id && typeof profileIconUrl === 'function' ? `<img src="${profileIconUrl(row.profile_icon_id)}" alt="" loading="lazy" onerror="this.remove()"/>` : ''}</span>
+          <div style="min-width:0;">
+            <div class="lb-name-line"><strong>${name}</strong> ${smurfBadge(row)}${risingBadge(row)}</div>
+            ${accountBadge}
+          </div>
+        </div>
+      </td>
       <td>${regionBadge(row.region)}</td>
       <td>${proBadge(row)}</td>
       <td>${teamCell(row)}</td>
-      <td>${ageCell(row)}</td>
+      <td style="text-align:right;">${ageCell(row)}</td>
       <td>${tierBadge(row.tier)}</td>
-      <td>${row.lp ?? '—'}</td>
+      <td style="text-align:right;font-weight:600;">${row.lp ?? '—'}</td>
       <td>${roleIcon(row.meta?.lp_role || row.role)}</td>
-      <td>${row.patch || '—'}</td>
-      <td>${row.games_played}</td>
-      <td>${row.winrate}%</td>
-      <td>${row.champion_pool_size}</td>
-      <td><span class="score-pill ${scoreClass(row.css_score)}">${row.css_score}</span></td>
-      <td>${row.percentile_rank == null ? '<span class="muted" title="Cohort too small (<10 players) for a meaningful percentile">—</span>' : 'P'+row.percentile_rank}</td>
-      <td>${smurfCell(row)}</td>
+      <td style="font-family:var(--f-mono);font-size:12px;color:var(--muted);">${row.patch || '—'}</td>
+      <td style="text-align:right;">${row.games_played}</td>
+      <td style="text-align:right;">${row.winrate}%</td>
+      <td style="text-align:right;">${row.champion_pool_size}</td>
+      <td style="text-align:center;"><span class="score-pill ${scoreClass(row.css_score)}">${row.css_score}</span></td>
+      <td style="text-align:right;font-family:var(--f-mono);font-size:11.5px;color:var(--muted);">${row.percentile_rank == null ? '<span class="muted" title="Cohort too small (<10 players) for a meaningful percentile">—</span>' : 'P'+row.percentile_rank}</td>
+      <td style="text-align:center;">${smurfCell(row)}</td>
       <td class="lb-actions-cell">
-        <span class="star ${watched?'active':''}" data-puuid="${row.puuid}" title="Toggle watchlist">${watched?'★':'☆'}</span>
-        <span class="lb-view-arrow" aria-label="Open profile">›</span>
+        <div>
+          <span class="star ${watched?'active':''}" data-puuid="${row.puuid}" title="Toggle watchlist">${watched?'★':'☆'}</span>
+          <span class="lb-view-arrow" aria-label="Open profile"></span>
+        </div>
       </td>
     `;
     tbody.appendChild(tr);
@@ -268,15 +281,39 @@ function showAccountsPopover(anchor, siblings) {
   }, 0);
 }
 function initLeaderboard() {
-  document.getElementById('f-apply').addEventListener('click', () => {
+  document.getElementById('f-apply').addEventListener('click', async (e) => {
     _lbOffset = 0;  // reset to first page when filters change
-    loadLeaderboard();
+    const btn = e.currentTarget;
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Applying…';
+    try { await loadLeaderboard(); }
+    finally { btn.disabled = false; btn.textContent = orig; }
   });
 
   // Account-grouping toggle (no backend call — pure post-fetch transform)
   document.getElementById('lb-group-toggle')?.addEventListener('change', () => {
     loadLeaderboard();
   });
+
+  // Export CSV — dump the currently-rendered ladder (drops the action column)
+  document.getElementById('lb-export')?.addEventListener('click', () => {
+    const table = document.getElementById('lb-table');
+    if (!table) return;
+    const csv = [...table.querySelectorAll('tr')].map(tr =>
+      [...tr.querySelectorAll('th,td')].slice(0, 16)
+        .map(c => '"' + c.innerText.replace(/\s+/g, ' ').trim().replace(/"/g, '""') + '"')
+        .join(',')
+    ).join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = 'challenger-ladder.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(a.href);
+  });
+
+  // "New scout list" → the recruitment watchlist (closest concept in-app)
+  document.getElementById('lb-new-list')?.addEventListener('click', () => setView('watchlist'));
 
   // Quick-filter pills — one-click presets that map to existing filter
   // controls so the user doesn't have to hunt through 8 dropdowns.
@@ -324,13 +361,17 @@ function initLeaderboard() {
 
 /* ---------------- WATCHLIST / KANBAN ---------------- */
 const KANBAN_STAGES = [
-  { id: 'watch',     label: '👀 Watching',  color: '#5b8def' },
-  { id: 'contacted', label: '✉ Contacted',  color: '#a78bfa' },
-  { id: 'trial',     label: '🎯 Trial',      color: '#f5a524' },
-  { id: 'offer',     label: '📝 Offer',      color: '#22d3a4' },
-  { id: 'signed',    label: '✅ Signed',     color: '#10b981' },
-  { id: 'rejected',  label: '✖ Pass',        color: '#7a818f' },
+  { id: 'watch',     name: 'Watching',  icon: 'eye',            color: '#8b5cf6' },
+  { id: 'contacted', name: 'Contacted', icon: 'mail',           color: '#60a5fa' },
+  { id: 'trial',     name: 'Trial',     icon: 'target',         color: '#f59e0b' },
+  { id: 'offer',     name: 'Offer',     icon: 'file-signature', color: '#ec4899' },
+  { id: 'signed',    name: 'Signed',    icon: 'check-circle-2', color: '#34d399' },
+  { id: 'rejected',  name: 'Pass',      icon: 'x-circle',       color: '#8a8a94' },
 ];
+function shortTier(t) {
+  const m = { CHALLENGER: 'Chall', GRANDMASTER: 'GM', MASTER: 'Master' };
+  return m[String(t || '').toUpperCase()] || (t || '');
+}
 
 async function loadWatchlist() {
   const data = await API('/watchlist');
@@ -356,15 +397,18 @@ async function loadWatchlist() {
   // ---- Render kanban columns ----
   board.innerHTML = KANBAN_STAGES.map(s => `
     <div class="kanban-col" data-stage="${s.id}">
-      <div class="kanban-col-head" style="border-top-color:${s.color};">
-        <span class="kanban-col-label">${s.label}</span>
+      <div class="kanban-col-head">
+        <span class="kanban-dot" style="background:${s.color};"></span>
+        <span class="kanban-col-icon" style="color:${s.color};" data-lucide="${s.icon}"></span>
+        <span class="kanban-col-label">${s.name}</span>
         <span class="kanban-col-count">${byStage[s.id].length}</span>
       </div>
       <div class="kanban-col-body" data-stage="${s.id}">
-        ${byStage[s.id].map(r => kanbanCard(r)).join('')}
+        ${byStage[s.id].map(r => kanbanCard(r)).join('') || '<div class="kanban-empty">Drop a card here</div>'}
       </div>
     </div>
   `).join('');
+  refreshIcons();
 
   // Drag-and-drop wiring
   board.querySelectorAll('.kanban-card').forEach(card => {
@@ -431,7 +475,7 @@ async function loadWatchlist() {
       <td>${row.games_played}</td>
       <td>${row.css_score!==null ? `<span class="score-pill ${scoreClass(row.css_score)}">${row.css_score}</span>` : '—'}</td>
       <td>${row.percentile_rank ?? '—'}</td>
-      <td><span class="kanban-stage-pill" style="background:${(KANBAN_STAGES.find(s=>s.id===row.stage)||{}).color || '#7a818f'};">${(KANBAN_STAGES.find(s=>s.id===row.stage)||{}).label || row.stage}</span></td>
+      <td><span class="kanban-stage-pill" style="background:${(KANBAN_STAGES.find(s=>s.id===row.stage)||{}).color || '#8a8a94'};">${(KANBAN_STAGES.find(s=>s.id===row.stage)||{}).name || row.stage}</span></td>
       <td><input class="tag-input" data-puuid="${row.puuid}" value="${(row.tag||'').replace(/"/g,'&quot;')}" placeholder="add tag…"/></td>
       <td>${row.added_at ? new Date(row.added_at).toLocaleDateString() : '—'}</td>
       <td>
@@ -458,26 +502,29 @@ async function loadWatchlist() {
 
 function kanbanCard(r) {
   const cssBadge = r.css_score != null
-    ? `<span class="score-pill ${scoreClass(r.css_score)}" style="font-size:10px;padding:2px 6px;">${r.css_score}</span>`
+    ? `<span class="score-pill ${scoreClass(r.css_score)}" style="min-width:34px;font-size:11.5px;padding:2px 8px;">${r.css_score}</span>`
     : '<span class="muted" style="font-size:10px;">—</span>';
   const since = r.stage_changed_at
     ? Math.max(0, Math.floor((Date.now() - new Date(r.stage_changed_at).getTime()) / (1000*60*60*24)))
     : null;
-  const sinceLabel = since != null ? `${since}d` : '';
+  const name = (r.summoner_name || '?').split('#')[0];
+  const initial = (name.replace(/^[^A-Za-z0-9]*/, '')[0] || name[0] || '?').toUpperCase();
+  const tierLine = `${shortTier(r.tier)}${r.lp != null ? ' · ' + r.lp + ' LP' : ''}`;
   return `
     <div class="kanban-card" draggable="true" data-puuid="${r.puuid}" title="Drag to move stage · click to open profile">
-      <div class="kanban-card-head">
-        <strong class="kanban-card-name">${(r.summoner_name || '?').split('#')[0]}</strong>
-        <button class="kanban-remove" data-puuid="${r.puuid}" title="Remove">✕</button>
-      </div>
-      <div class="kanban-card-meta">
-        ${roleIcon(r.role, { size: 14 })}
-        ${tierBadge(r.tier, { size: 14 })}
-        ${r.lp != null ? `<span class="muted" style="font-size:10px;">${r.lp} LP</span>` : ''}
+      <div class="kanban-card-top">
+        <span class="kanban-avatar">${initial}</span>
+        <div class="kanban-card-id">
+          <div class="kanban-card-name-line"><strong class="kanban-card-name">${name}</strong> ${roleChip(r.role)}</div>
+          <div class="kanban-card-tier">${tierLine}</div>
+        </div>
         ${cssBadge}
       </div>
-      ${r.tag ? `<div class="kanban-card-tag">${r.tag}</div>` : ''}
-      ${sinceLabel ? `<div class="kanban-card-since muted">${sinceLabel} in stage</div>` : ''}
+      ${r.tag ? `<div class="kanban-card-tag"><span data-lucide="tag"></span>${r.tag}</div>` : ''}
+      <div class="kanban-card-foot">
+        <span class="kanban-card-since">${since != null ? since + ' days in stage' : 'new'}</span>
+        <button class="kanban-remove" data-puuid="${r.puuid}" title="Remove">✕</button>
+      </div>
     </div>
   `;
 }
@@ -506,7 +553,31 @@ async function initTeam(code) {
   const card = document.getElementById('team-card');
   if (!card) return;
   if (!code) {
-    card.innerHTML = '<p class="muted">No team specified. Try <code>#/team/G2</code>.</p>';
+    card.innerHTML = `
+      <div class="page-head">
+        <div>
+          <div class="page-overline">Org scouting</div>
+          <h1 class="page-title">Teams</h1>
+          <div class="page-sub">Open a team's roster and recent tournament matches</div>
+        </div>
+      </div>
+      <div class="card">
+        <div style="font-weight:700;font-size:14px;margin-bottom:12px;">Open a team</div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+          <input id="team-code-input" type="text" placeholder="Team code — e.g. G2, FNC, KC" style="flex:1;min-width:220px;"/>
+          <button id="team-go">Open</button>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;">
+          ${['G2','FNC','KC','MKOI','TH','BDS','SK','VIT','GX','KOI'].map(c => `<button class="quick-pill team-quick" data-code="${c}">${c}</button>`).join('')}
+        </div>
+      </div>`;
+    const go = () => {
+      const v = (document.getElementById('team-code-input').value || '').trim();
+      if (v) setView('team', v.toUpperCase());
+    };
+    document.getElementById('team-go').addEventListener('click', go);
+    document.getElementById('team-code-input').addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+    document.querySelectorAll('.team-quick').forEach(b => b.addEventListener('click', () => setView('team', b.dataset.code)));
     return;
   }
   card.innerHTML = '<p class="muted">Loading…</p>';
@@ -523,60 +594,78 @@ async function initTeam(code) {
   const wr = r.games ? Math.round(r.wins / r.games * 100) : null;
   const flagFor = (country) => (typeof flagEmoji === 'function' ? flagEmoji(country) : '');
 
+  const teamInitial = (t.code || '?').slice(0, 3);
+  const last10 = data.recent_matches.slice(0, 10).map(m => m.won === true ? 'W' : m.won === false ? 'L' : '?');
+
   card.innerHTML = `
-    <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px;">
-      ${t.logo_url ? `<img src="${t.logo_url}" style="width:56px;height:56px;object-fit:contain;" onerror="this.style.display='none'"/>` : ''}
-      <div style="flex:1;">
-        <h2 style="margin:0 0 2px;">${t.code} <span style="font-weight:400;color:var(--muted);">${t.name}</span></h2>
-        <div class="muted" style="font-size:12px;">League: <strong>${(t.league_slug || '?').toUpperCase()}</strong> · Last 10: <strong>${r.wins}W ${r.losses}L</strong>${wr != null ? ` · ${wr}% WR` : ''}</div>
+    <!-- Team hero -->
+    <div class="team-hero">
+      <div class="team-logo-box">${t.logo_url ? `<img src="${t.logo_url}" onerror="this.parentElement.innerHTML='${teamInitial}'"/>` : teamInitial}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <h1 class="team-name">${t.name || t.code}</h1>
+          <span class="team-league-pill">${(t.league_slug || '?').toUpperCase()}</span>
+        </div>
+        <div class="team-hero-meta">${t.code}${wr != null ? ` · ${wr}% WR` : ''} · roster ${data.roster.length}</div>
+      </div>
+      <div class="team-record">
+        <div class="team-record-label">Last 10</div>
+        <div class="team-record-squares">
+          ${last10.map(x => `<span class="wl-square wl-${x}">${x}</span>`).join('') || '<span class="muted" style="font-size:11px;">—</span>'}
+        </div>
+        <div class="team-record-score"><span style="color:var(--green);">${r.wins}</span><span style="color:var(--dim);">–</span><span style="color:var(--red);">${r.losses}</span></div>
       </div>
     </div>
 
-    <div class="grid-2">
-      <div class="card">
-        <h3>Active roster <span class="muted" style="font-size:11px;font-weight:400;">${data.roster.length} member(s) — sourced from Lolpros</span></h3>
-        ${data.roster.length === 0 ? '<p class="muted">No roster found. Run sync-leaguepedia / sync-lolpros to populate.</p>' : `
+    <!-- Roster -->
+    <div class="card" style="padding:0;overflow:hidden;">
+      <div style="padding:16px 18px 10px;font-weight:700;font-size:14px;">Active roster <span class="muted" style="font-weight:500;font-size:12px;">· sorted TOP → SUP</span></div>
+      ${data.roster.length === 0 ? `<div class="empty-state" style="border:0;"><span data-lucide="shield-off"></span><div class="empty-state-title">No roster on record for this team.</div><div class="empty-state-sub">Run Sync Leaguepedia to resolve the active roster.</div></div>` : `
+      <div class="table-wrap" style="border:0;border-radius:0;">
         <table>
-          <thead><tr><th></th><th>Player</th><th>Role</th><th>Country</th><th>Age</th><th>Tier</th><th>CSS</th><th></th></tr></thead>
+          <thead><tr><th>Role</th><th>Player</th><th>Country</th><th style="text-align:right;">Age</th><th style="text-align:right;">Tier</th><th style="text-align:center;">CSS</th></tr></thead>
           <tbody>
             ${data.roster.map(m => `
               <tr style="cursor:pointer;" data-puuid="${m.puuid || ''}">
-                <td>${m.player_image_url ? `<img src="${m.player_image_url}" style="width:36px;height:36px;border-radius:6px;object-fit:cover;" onerror="this.style.display='none'"/>` : ''}</td>
-                <td><strong>${m.leaguepedia_id || m.summoner_name || '?'}</strong>${m.summoner_name ? `<div class="muted" style="font-size:11px;">${m.summoner_name}</div>` : ''}</td>
-                <td>${m.role || '<span class="muted">—</span>'}</td>
-                <td>${flagFor(m.country)} ${m.country || ''}</td>
-                <td>${m.age != null ? m.age : '<span class="muted">—</span>'}</td>
-                <td>${tierBadge(m.tier)} ${m.lp != null ? m.lp + ' LP' : ''}</td>
-                <td>${m.css != null ? `<span class="score-pill ${scoreClass(m.css)}">${m.css}</span>` : '<span class="muted">—</span>'}</td>
-                <td>${m.puuid ? '<button class="secondary">View</button>' : ''}</td>
+                <td>${roleChip(m.role)}</td>
+                <td><span class="team-player-cell">${m.player_image_url ? `<img class="team-player-img" src="${m.player_image_url}" onerror="this.style.display='none'"/>` : `<span class="team-player-init">${((m.leaguepedia_id || m.summoner_name || '?')[0] || '?').toUpperCase()}</span>`}<strong>${m.leaguepedia_id || m.summoner_name || '?'}</strong></span></td>
+                <td style="color:var(--text-2);">${flagFor(m.country)} ${m.country || ''}</td>
+                <td style="text-align:right;color:var(--text-2);">${m.age != null ? m.age : '—'}</td>
+                <td style="text-align:right;white-space:nowrap;">${tierBadge(m.tier)} ${m.lp != null ? m.lp + ' LP' : ''}</td>
+                <td style="text-align:center;">${m.css != null ? `<span class="score-pill ${scoreClass(m.css)}">${m.css}</span>` : '<span class="muted">—</span>'}</td>
               </tr>
             `).join('')}
           </tbody>
-        </table>`}
-      </div>
+        </table>
+      </div>`}
+    </div>
 
-      <div class="card">
-        <h3>Recent matches <span class="muted" style="font-size:11px;font-weight:400;">last 10 — click for deep-dive</span></h3>
-        ${data.recent_matches.length === 0 ? '<p class="muted">No tournament matches in DB yet for this team.</p>' : `
-        <table>
-          <thead><tr><th>Date</th><th>League</th><th>Block</th><th></th><th>Opponent</th><th>Side</th><th>Patch</th></tr></thead>
-          <tbody>
-            ${data.recent_matches.map(m => `
-              <tr class="tn-match-row" data-mid="${m.match_id}" style="cursor:pointer;">
-                <td>${m.game_date ? new Date(m.game_date).toLocaleDateString() : '—'}</td>
-                <td><span class="role-tag">${(m.league_slug || '').toUpperCase()}</span></td>
-                <td>${m.block_name || ''}</td>
-                <td>${m.won === true ? '<span class="delta-pos">W</span>' : m.won === false ? '<span class="delta-neg">L</span>' : '<span class="muted">?</span>'}</td>
-                <td>${m.opponent_logo ? `<img src="${m.opponent_logo}" style="width:18px;height:18px;vertical-align:middle;margin-right:4px;object-fit:contain;" onerror="this.style.display='none'"/>` : ''}<strong>${m.opponent_code || '?'}</strong></td>
-                <td>${m.side === 'blue' ? '<span style="color:#6ea8ff;">Blue</span>' : '<span style="color:#ff8b8b;">Red</span>'}</td>
-                <td class="muted" style="font-size:11px;">${m.patch || '—'}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>`}
-      </div>
+    <!-- Recent matches -->
+    <div class="card" style="padding:0;overflow:hidden;">
+      <div style="padding:16px 18px 4px;"><div style="font-weight:700;font-size:14px;">Recent tournament matches</div><div class="muted" style="font-size:12px;margin-top:2px;">click a match to open the deep-dive</div></div>
+      ${data.recent_matches.length === 0 ? `<div class="empty-state" style="border:0;"><span data-lucide="trophy"></span><div class="empty-state-title">No tournament matches in DB yet.</div></div>` : `
+      <div class="team-matches">
+        ${data.recent_matches.map(m => {
+          const wl = m.won === true ? 'W' : m.won === false ? 'L' : '?';
+          return `
+          <div class="team-match-row tn-match-row" data-mid="${m.match_id}">
+            <span class="team-match-date">${m.game_date ? new Date(m.game_date).toLocaleDateString() : '—'}</span>
+            <span class="team-match-league">${(m.league_slug || '').toUpperCase()}</span>
+            <span class="team-match-vs">
+              <strong>${t.code}</strong>
+              <span class="team-match-side" style="color:${m.side === 'blue' ? 'var(--blue-side)' : 'var(--red-side)'};">${m.side === 'blue' ? 'Blue' : 'Red'}</span>
+              ${m.opponent_logo ? `<img class="team-match-opp-logo" src="${m.opponent_logo}" onerror="this.style.display='none'"/>` : ''}
+              <span style="color:var(--text-2);font-weight:600;">${m.opponent_code || '?'}</span>
+            </span>
+            <span class="wl-pill wl-${wl}">${wl}</span>
+            <span class="team-match-patch muted">${m.patch || ''}</span>
+            <span class="lb-view-arrow"></span>
+          </div>`;
+        }).join('')}
+      </div>`}
     </div>
   `;
+  refreshIcons();
 
   // Click roster row → player profile (deep-link via setView)
   card.querySelectorAll('tr[data-puuid]').forEach(tr => {
@@ -668,21 +757,21 @@ async function loadPatchImpact() {
   await refreshWatchedSet();
 
   tbody.innerHTML = rows.map((r, i) => {
-    const deltaCls = r.delta >= 5 ? 'delta-pos' : r.delta <= -5 ? 'delta-neg' : 'muted';
     const sign = r.delta > 0 ? '+' : '';
-    const proCell = r.is_pro ? `<span class="role-tag" style="background:rgba(34,211,164,0.12);color:#22d3a4;">${r.team || 'PRO'}</span>` : '<span class="muted">—</span>';
+    const dCls = r.delta >= 5 ? 'delta-pill-pos' : r.delta <= -5 ? 'delta-pill-neg' : 'delta-pill-flat';
+    const proCell = r.is_pro ? `<span class="score-pill s-strong" style="min-width:0;">${r.team || 'PRO'}</span>` : '<span class="muted">—</span>';
     return `
       <tr style="cursor:pointer;" data-puuid="${r.puuid}">
-        <td>${i + 1}</td>
+        <td style="text-align:center;font-family:var(--f-mono);color:var(--muted);">${i + 1}</td>
         <td><strong>${r.summoner_name}</strong></td>
         <td>${regionBadge(r.region)}</td>
         <td>${proCell}</td>
-        <td>${roleIcon(r.role, { size: 16 })}</td>
+        <td>${roleChip(r.role)}</td>
         <td>${tierBadge(r.tier)} ${r.lp != null ? r.lp + ' LP' : ''}</td>
-        <td>${r.css_from}</td>
-        <td>${r.css_to}</td>
-        <td class="${deltaCls}"><strong>${sign}${r.delta}</strong></td>
-        <td class="muted" style="font-size:11px;">${r.games_from} / ${r.games_to}</td>
+        <td style="text-align:right;color:var(--muted);">${r.css_from}</td>
+        <td style="text-align:right;"><span class="score-pill ${scoreClass(r.css_to)}">${r.css_to}</span></td>
+        <td style="text-align:right;"><span class="delta-pill ${dCls}">${sign}${r.delta}</span></td>
+        <td class="muted" style="text-align:right;font-family:var(--f-mono);font-size:11px;">${r.games_from} / ${r.games_to}</td>
         <td><button class="secondary view-pi" data-puuid="${r.puuid}">View</button></td>
       </tr>
     `;
@@ -720,41 +809,58 @@ function renderChampionGrid() {
     ? _champRaw.filter(c => c.champion_name.toLowerCase().includes(search))
     : _champRaw;
 
-  counter.textContent = `${filtered.length} champion${filtered.length>1?'s':''} match — click any card for the player leaderboard.`;
+  counter.textContent = `${filtered.length} champion${filtered.length>1?'s':''} match — click any row for the best players.`;
 
   if (!filtered.length) {
-    grid.innerHTML = `<p class="muted" style="text-align:center;padding:30px;">No champions match.</p>`;
+    grid.innerHTML = `
+      <div class="empty-state">
+        <span data-lucide="swords"></span>
+        <div class="empty-state-title">No champion stats for this patch yet.</div>
+        <div class="empty-state-sub">Run an ingestion to aggregate Challenger matches.</div>
+      </div>`;
+    refreshIcons();
     return;
   }
 
-  grid.innerHTML = filtered.slice(0, 240).map(c => `
-    <div class="champion-card" data-id="${c.champion_id}" data-role="${c.role}">
-      <div class="champion-card-head">
-        <img class="champion-icon" src="${c.icon_url}" alt="${c.champion_name}" onerror="this.style.opacity='0.2'"/>
-        <div style="flex:1;min-width:0;">
-          <div class="champion-card-name">${c.champion_name}</div>
-          <div class="champion-card-meta">
-            ${roleIcon(c.role, { size: 16 })}
-            ${c.latest_patch ? ` · ${c.latest_patch}` : ''}
-          </div>
-        </div>
-      </div>
-      <div class="champion-card-stats">
-        <div><div class="label">Games</div><div class="value">${c.total_games}</div></div>
-        <div><div class="label">Mains</div><div class="value">${c.total_mains}</div></div>
-        <div><div class="label">Avg WR</div><div class="value">${c.winrate}%</div></div>
-        <div><div class="label">Avg KDA</div><div class="value">${c.avg_kda}</div></div>
-      </div>
-      <div class="champion-card-css">
-        ${c.baselined
-          ? `Best Champ-CSS <strong style="color:var(--accent);">${c.max_champ_css}</strong> · avg ${c.avg_champ_css}`
-          : `<span class="muted">No baseline yet (need ≥5 mains)</span>`}
-      </div>
-    </div>
-  `).join('');
+  const wrColor = (w) => w >= 52 ? 'var(--green)' : (w <= 48 ? 'var(--red)' : 'var(--text-2)');
+  grid.innerHTML = `
+    <div class="table-wrap">
+      <table class="champions-table">
+        <thead>
+          <tr>
+            <th style="text-align:center;">#</th>
+            <th>Champion</th>
+            <th>Role</th>
+            <th style="text-align:right;">Games</th>
+            <th style="text-align:right;">Mains</th>
+            <th style="text-align:right;">WR</th>
+            <th style="text-align:right;">KDA</th>
+            <th style="text-align:center;">Champ CSS</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${filtered.slice(0, 240).map((c, i) => `
+            <tr class="champ-row" data-id="${c.champion_id}" data-role="${c.role}" style="cursor:pointer;">
+              <td style="text-align:center;font-family:var(--f-mono);color:var(--muted);">${i + 1}</td>
+              <td>
+                <span class="champ-cell">
+                  <img class="champ-cell-icon" src="${c.icon_url}" alt="${c.champion_name}" onerror="this.style.opacity='0.2'"/>
+                  <strong>${c.champion_name}</strong>
+                </span>
+              </td>
+              <td>${roleChip(c.role)}</td>
+              <td style="text-align:right;">${c.total_games}</td>
+              <td style="text-align:right;">${c.total_mains}</td>
+              <td style="text-align:right;font-weight:600;color:${wrColor(c.winrate)};">${c.winrate}%</td>
+              <td style="text-align:right;">${c.avg_kda}</td>
+              <td style="text-align:center;">${c.baselined ? `<span class="score-pill ${scoreClass(c.max_champ_css)}">${c.max_champ_css}</span>` : '<span class="muted">—</span>'}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
 
-  grid.querySelectorAll('.champion-card').forEach(card =>
-    card.addEventListener('click', () => openChampionModal(card.dataset.id, card.dataset.role))
+  grid.querySelectorAll('.champ-row').forEach(row =>
+    row.addEventListener('click', () => openChampionModal(row.dataset.id, row.dataset.role))
   );
 }
 
@@ -1016,7 +1122,7 @@ function initCompare() {
 
     // Radar (8 axes — clamped to player-set max so the shape reflects relative strength)
     const metrics = ['gd15','xpd15','dmg_share','kp','kda','vspm','solo_kills','cspm'];
-    const palette = ['#5b8def','#22d3a4','#f5a524','#a78bfa','#ef4444'];
+    const palette = ['#8b5cf6','#ec4899','#60a5fa','#f59e0b','#34d399'];
     const max = metrics.map(m => Math.max(...data.map(d => Math.abs(d.stats[m]||0)), 1));
     if (_cmpRadar) _cmpRadar.destroy();
     _cmpRadar = new Chart(document.getElementById('cmp-radar'), {
@@ -1036,13 +1142,13 @@ function initCompare() {
         scales: {
           r: {
             min: 0, max: 100,
-            grid: { color: 'rgba(255,255,255,0.06)' },
-            angleLines: { color: 'rgba(255,255,255,0.08)' },
-            pointLabels: { color: '#b6bcc8', font: { size: 11 } },
+            grid: { color: '#22222a' },
+            angleLines: { color: '#22222a' },
+            pointLabels: { color: '#8a8a94', font: { size: 11 } },
             ticks: { display: false },
           }
         },
-        plugins: { legend: { labels: { color: '#e7eaf0' } } },
+        plugins: { legend: { labels: { color: '#e5e5ea' } } },
       }
     });
   }
@@ -1051,42 +1157,67 @@ function initCompare() {
 }
 
 /* ---------------- ALERTS ---------------- */
+// Turn a rule's conditions object into a compact human-readable summary.
+function formatAlertConditions(c) {
+  if (!c || typeof c !== 'object') return '<span class="muted">any player</span>';
+  const LABELS = {
+    min_css: 'CSS ≥', min_smurf: 'Smurf ≥', min_percentile: 'P ≥', min_pct: 'P ≥',
+    min_games: 'games ≥', max_age: 'age ≤', role: 'role', tier: 'tier',
+  };
+  const FLAGS = { fa: 'free agents', rising: 'rising stars', pro: 'pros', free_agents: 'free agents' };
+  const parts = [];
+  for (const [k, v] of Object.entries(c)) {
+    if (v == null || v === '' || v === false) continue;
+    if (FLAGS[k]) { if (v) parts.push(FLAGS[k]); continue; }
+    parts.push(`${LABELS[k] || k} ${v}`);
+  }
+  return parts.length ? parts.join(' · ') : '<span class="muted">any player</span>';
+}
+
 function initAlerts() {
   async function refresh() {
     const data = await API('/alerts/rules');
     const rules = data.rules || [];
     const list = document.getElementById('al-rules');
+    const countEl = document.getElementById('al-rules-count');
+    if (countEl) countEl.textContent = rules.length ? `· ${rules.length}` : '';
     if (!rules.length) {
-      list.innerHTML = '<p class="muted" style="font-size:12px;">No rules yet — create one below.</p>';
-    } else {
       list.innerHTML = `
-        <div class="table-wrap">
-          <table>
-            <thead><tr>
-              <th>Name</th><th>Conditions</th><th>Last fired</th><th>Status</th><th></th>
-            </tr></thead>
-            <tbody>
-              ${rules.map(r => `
-                <tr data-id="${r.id}">
-                  <td><strong>${r.name}</strong></td>
-                  <td><code style="font-size:11px;color:var(--accent-2);">${JSON.stringify(r.conditions)}</code></td>
-                  <td>${r.last_fired_at ? new Date(r.last_fired_at).toLocaleString() : '<span class="muted">never</span>'}</td>
-                  <td>${r.enabled ? '<span class="score-pill s-elite">enabled</span>' : '<span class="score-pill s-weak">disabled</span>'}</td>
-                  <td>
-                    <button class="secondary al-test" data-id="${r.id}" style="font-size:11px;padding:4px 9px;">Test</button>
-                    <button class="secondary al-toggle" data-id="${r.id}" data-enabled="${r.enabled}" style="font-size:11px;padding:4px 9px;">${r.enabled?'Disable':'Enable'}</button>
-                    <button class="secondary al-delete" data-id="${r.id}" style="font-size:11px;padding:4px 9px;color:var(--danger);">Delete</button>
-                  </td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
+        <div class="empty-state">
+          <span data-lucide="bell-off"></span>
+          <div class="empty-state-title">No alert rules yet.</div>
+          <div class="empty-state-sub">Create a rule to get a webhook ping when a watched player spikes, hits a peak, or turns FA.</div>
         </div>`;
+      refreshIcons();
+    } else {
+      list.innerHTML = rules.map(r => {
+        const on = !!r.enabled;
+        return `
+          <div class="alert-rule-card">
+            <span class="alert-rule-icon"><span data-lucide="bell-ring"></span></span>
+            <div class="alert-rule-body">
+              <div class="alert-rule-title-row">
+                <span class="alert-rule-title">${r.name}</span>
+                <span class="alert-rule-badge ${on ? 'on' : 'off'}">${on ? 'ON' : 'PAUSED'}</span>
+              </div>
+              <div class="alert-rule-cond">${formatAlertConditions(r.conditions)}</div>
+              <div class="alert-rule-meta">
+                <span>${r.last_fired_at ? 'last fired ' + new Date(r.last_fired_at).toLocaleDateString() : 'never fired'}</span>
+              </div>
+            </div>
+            <div class="alert-rule-actions">
+              <button class="alert-toggle ${on ? 'on' : ''}" data-id="${r.id}" data-enabled="${on}" title="${on ? 'Disable' : 'Enable'}"><span class="knob"></span></button>
+              <button class="secondary al-test" data-id="${r.id}" style="font-size:11px;padding:4px 9px;">Test</button>
+              <button class="secondary al-delete" data-id="${r.id}" style="font-size:11px;padding:4px 9px;color:var(--danger);">✕</button>
+            </div>
+          </div>`;
+      }).join('');
+      refreshIcons();
       list.querySelectorAll('.al-test').forEach(b => b.addEventListener('click', async () => {
         const r = await API(`/alerts/rules/${b.dataset.id}/test`, { method: 'POST' });
         alert(r.delivered ? '✅ Test sent.' : '❌ Failed: ' + (r.error || 'unknown'));
       }));
-      list.querySelectorAll('.al-toggle').forEach(b => b.addEventListener('click', async () => {
+      list.querySelectorAll('.alert-toggle').forEach(b => b.addEventListener('click', async () => {
         const enabled = b.dataset.enabled !== 'true';
         await API(`/alerts/rules/${b.dataset.id}`, { method: 'PATCH', body: JSON.stringify({ enabled }) });
         refresh();
@@ -1159,17 +1290,16 @@ function initAdmin() {
     if (!grid) return;
     const fmt = (n) => (n ?? 0).toLocaleString();
     const cards = [
-      { label: 'SoloQ players',     value: fmt(s.soloq?.players),       sub: `${fmt(s.soloq?.matches)} matches`,        cls: '' },
-      { label: 'Aggregates',         value: fmt(s.soloq?.aggregates),    sub: `${fmt(s.soloq?.participations)} part.`,   cls: '' },
-      { label: 'Pros matched',       value: fmt(s.leaguepedia?.matched_pros), sub: 'Lolpros / Leaguepedia',             cls: 'metric-emerald' },
-      { label: 'Tournament matches', value: fmt(s.tournaments?.official_matches), sub: `${fmt(s.tournaments?.tournaments)} tournaments`, cls: 'metric-amber' },
-      { label: 'Pro teams',          value: fmt(s.tournaments?.pro_teams), sub: `${fmt(s.tournaments?.lec_roster)} LEC roster`, cls: 'metric-violet' },
+      { label: 'SoloQ matches',     value: fmt(s.soloq?.matches),               delta: `${fmt(s.soloq?.aggregates)} aggregates`,      accent: 'var(--violet)' },
+      { label: 'Players tracked',   value: fmt(s.soloq?.players),               delta: `${fmt(s.soloq?.participations)} participations`, accent: 'var(--green)' },
+      { label: 'Pros tagged',       value: fmt(s.leaguepedia?.matched_pros),    delta: 'Lolpros / Leaguepedia',                       accent: 'var(--amber)' },
+      { label: 'Tournament games',  value: fmt(s.tournaments?.official_matches), delta: `${fmt(s.tournaments?.tournaments)} tournaments`, accent: 'var(--magenta)' },
     ];
     grid.innerHTML = cards.map(c => `
-      <div class="metric-card ${c.cls}">
-        <div class="metric-label">${c.label}</div>
-        <div class="metric-value">${c.value}</div>
-        <div class="metric-sub">${c.sub}</div>
+      <div class="stat-card" style="--accent-color:${c.accent};">
+        <div class="stat-card-label">${c.label}</div>
+        <div class="stat-card-value">${c.value}</div>
+        <div class="stat-card-delta">${c.delta}</div>
       </div>
     `).join('');
   };

@@ -23,6 +23,7 @@ class Player(Base):
     region = Column(String(8), index=True)
     main_role = Column(String(8), index=True, nullable=True)
     account_level = Column(Integer, default=0)
+    profile_icon_id = Column(Integer, nullable=True)  # Riot summoner-v4 profileIconId → account portrait
     total_games_lifetime = Column(Integer, default=0)
     smurf_flag = Column(Boolean, default=False)
     smurf_score = Column(Float, default=0.0)         # 0..1 multi-signal score (replaces simple flag)

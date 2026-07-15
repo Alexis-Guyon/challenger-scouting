@@ -1,20 +1,22 @@
 services:
   app:
     build: .
+    # Bind to localhost only — the app is reached through Caddy (HTTPS), never
+    # directly on :8000 from the internet. Internal tool = no public port.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
+    # Load RIOT_API_KEY / JWT_SECRET / FANDOM_* etc. from the root .env file
+    # (created by ops/setup-server.sh). `environment:` below still wins for the
+    # DB URL and provides sane defaults.
+    env_file:
+      - .env
     environment:
-      DATABASE_URL: postgresql+psycopg://scouting:scouting@db:5432/scouting
-      RIOT_API_KEY: ${RIOT_API_KEY}
+      DATABASE_URL: postgresql+psycopg://scouting:${POSTGRES_PASSWORD:-scouting}@db:5432/scouting
       PLATFORM: ${PLATFORM:-euw1}
       REGION: ${REGION:-europe}
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
       JWT_EXPIRY_HOURS: ${JWT_EXPIRY_HOURS:-72}
       MIN_GAMES: ${MIN_GAMES:-20}
       MATCH_HISTORY_COUNT: ${MATCH_HISTORY_COUNT:-30}
-      CURRENT_PATCH: ${CURRENT_PATCH:-14.9}
-      FANDOM_USERNAME: ${FANDOM_USERNAME:-${LP_USERNAME:-}}
-      FANDOM_PASSWORD: ${FANDOM_PASSWORD:-${LP_PASSWORD:-}}
     depends_on:
       db:
         condition: service_healthy
@@ -24,7 +26,7 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: scouting
-      POSTGRES_PASSWORD: scouting
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-scouting}
       POSTGRES_DB: scouting
     volumes:
       - postgres_data:/var/lib/postgresql/data

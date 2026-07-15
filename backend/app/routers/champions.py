@@ -11,8 +11,6 @@ Champion-specific scouting endpoints.
 These let scouts answer "give me the top 10 ADCs on Kaisa right now" instead
 of just "top 10 ADCs in general".
 """
-from collections import defaultdict
-
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
@@ -42,49 +40,60 @@ def list_champions(
     patches (one row per champion_id × role) so the UI isn't cluttered with
     "Ezreal 16.9 / Ezreal 16.8 / Ezreal 16.7" rows. Pass ?patch=X.Y to scope.
     """
-    q = db.query(ChampionPool)
+    from ..services import cache
+    cache_key = ("champions", role, patch, min_total_games, sort)
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    # Aggregate in SQL (GROUP BY champion × role) instead of pulling every
+    # ChampionPool row (~540k) into Python. Cuts this endpoint from ~14s to
+    # sub-second: the DB returns one row per champion×role (~650 rows).
+    from sqlalchemy import case, func
+
+    kda = func.coalesce(ChampionPool.avg_kda, 0.0)
+    css = ChampionPool.champion_css
+    q = db.query(
+        ChampionPool.champion_id.label("cid"),
+        ChampionPool.champion_name.label("name"),
+        ChampionPool.role.label("role"),
+        func.sum(ChampionPool.games).label("total_games"),
+        func.sum(ChampionPool.wins).label("total_wins"),
+        func.count(func.distinct(ChampionPool.puuid)).label("distinct_mains"),
+        func.sum(kda * ChampionPool.games).label("kda_weighted_sum"),
+        func.max(ChampionPool.patch).label("latest_patch"),
+        func.max(css).label("max_champ_css"),
+        func.sum(case((css > 0, css), else_=0.0)).label("css_sum"),
+        func.sum(case((css > 0, 1), else_=0)).label("css_cnt"),
+        func.sum(case((ChampionPool.has_champion_baseline.is_(True), 1), else_=0)).label("n_baselined"),
+    ).filter(
+        ChampionPool.champion_name.isnot(None),
+        ChampionPool.role.isnot(None),
+    )
     if role:
         q = q.filter(ChampionPool.role == role.upper())
     if patch:
         q = q.filter(ChampionPool.patch == patch)
-    rows = q.all()
-
-    by_key: dict[tuple, list[ChampionPool]] = defaultdict(list)
-    for cp in rows:
-        if not cp.champion_name or not cp.role:
-            continue
-        by_key[(cp.champion_id, cp.champion_name, cp.role)].append(cp)
+    q = q.group_by(ChampionPool.champion_id, ChampionPool.champion_name, ChampionPool.role)
+    q = q.having(func.sum(ChampionPool.games) >= min_total_games)
 
     out = []
-    for (cid, name, r), items in by_key.items():
-        total_games = sum(it.games for it in items)
-        if total_games < min_total_games:
-            continue
-        total_wins = sum(it.wins for it in items)
-        # Distinct mains = distinct puuids (a player may have rows on multiple patches)
-        distinct_mains = len({it.puuid for it in items})
-        # Weighted avg KDA: bigger samples weigh more
-        avg_kda = sum(it.avg_kda * it.games for it in items) / max(total_games, 1)
-        n_baselined = sum(1 for it in items if getattr(it, "has_champion_baseline", False))
-        scored = [getattr(it, "champion_css", 0) for it in items if getattr(it, "champion_css", 0)]
-        avg_champ_css = sum(scored) / len(scored) if scored else 0
-        max_champ_css = max(scored) if scored else 0
-        # Latest patch where this champ was played (so the UI can show recency)
-        latest_patch = max((it.patch or "" for it in items), default="")
-
+    for row in q.all():
+        total_games = row.total_games or 0
+        css_cnt = row.css_cnt or 0
         out.append({
-            "champion_id": cid,
-            "champion_name": name,
-            "icon_url": _champion_icon_url(cid),
-            "role": r,
-            "latest_patch": latest_patch,
-            "total_mains": distinct_mains,
+            "champion_id": row.cid,
+            "champion_name": row.name,
+            "icon_url": _champion_icon_url(row.cid),
+            "role": row.role,
+            "latest_patch": row.latest_patch or "",
+            "total_mains": row.distinct_mains or 0,
             "total_games": total_games,
-            "winrate": round(total_wins / total_games * 100, 1) if total_games else 0,
-            "avg_kda": round(avg_kda, 2),
-            "baselined": n_baselined > 0,
-            "avg_champ_css": round(avg_champ_css, 1),
-            "max_champ_css": round(max_champ_css, 1),
+            "winrate": round((row.total_wins or 0) / total_games * 100, 1) if total_games else 0,
+            "avg_kda": round((row.kda_weighted_sum or 0) / max(total_games, 1), 2),
+            "baselined": (row.n_baselined or 0) > 0,
+            "avg_champ_css": round((row.css_sum or 0) / css_cnt, 1) if css_cnt else 0,
+            "max_champ_css": round(row.max_champ_css or 0, 1),
         })
 
     sort_key = {
@@ -94,6 +103,7 @@ def list_champions(
         "mains": lambda x: -x["total_mains"],
     }.get(sort, lambda x: -x["total_games"])
     out.sort(key=lambda x: (sort_key(x), x["champion_name"]))
+    cache.put(cache_key, out)
     return out
 
 

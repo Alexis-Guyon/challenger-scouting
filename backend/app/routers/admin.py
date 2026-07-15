@@ -244,6 +244,10 @@ def _run_recompute_job(job_id: str, min_games: int):
         n_scored = score_all(db, min_games=max(1, min_games))
         update_job(job_id, step="champion_scoring", extras_merge={"scored_aggregates": n_scored})
         n_champ = score_all_champions(db)
+        # Aggregates/scores just changed — drop the leaderboard/champions cache
+        # so the next request serves fresh data instead of waiting for the TTL.
+        from ..services import cache
+        cache.clear()
         update_job(job_id, status="done", step="done", extras_merge={"champion_baselines": n_champ})
     except Exception as exc:
         logger.exception("recompute failed")

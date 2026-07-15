@@ -1,3 +1,21 @@
+// Re-render any [data-lucide] placeholders into inline SVGs. Safe to call
+// repeatedly and before the CDN script has loaded (no-op until ready).
+function refreshIcons() {
+  if (window.lucide && typeof window.lucide.createIcons === 'function') {
+    try { window.lucide.createIcons(); } catch (e) { /* ignore */ }
+  }
+}
+
+// Ladder Role column — text chip color-coded per role (TOP/JGL/MID/ADC/SUP).
+// Distinct from roleIcon() (image glyph) used elsewhere.
+function roleChip(role) {
+  if (!role || role === '—') return '<span class="muted">—</span>';
+  const up = String(role).toUpperCase();
+  const known = ['TOP', 'JGL', 'MID', 'ADC', 'SUP'];
+  const cls = known.includes(up) ? ` role-${up}` : '';
+  return `<span class="role-chip${cls}">${up}</span>`;
+}
+
 const ROLE_NORMALIZE = {
   top: 'top', t: 'top',
   jgl: 'jungle', jng: 'jungle', jng_: 'jungle', jungle: 'jungle', jg: 'jungle',

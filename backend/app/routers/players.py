@@ -121,6 +121,7 @@ def _serialize_player(p: Player, db: Session) -> dict:
         "region": p.region,
         "main_role": p.main_role,
         "account_level": p.account_level,
+        "profile_icon_id": p.profile_icon_id,
         "smurf_flag": p.smurf_flag,
         "smurf_score": round(p.smurf_score or 0.0, 2),
         "smurf_signals": smurf_signals,
@@ -646,12 +647,27 @@ def list_players(
     tier: str | None = Query(default=None, description="Filter by latest rank tier: CHALLENGER, GRANDMASTER, MASTER"),
     smurf: str | None = Query(default=None, description="hide / suspect_only / clean_only — filter by smurf_score"),
     region: str | None = Query(default=None, description="Filter by Player.region (platform code: euw1, kr, na1, ...)"),
+    group_accounts: bool = Query(default=False, description="Collapse all accounts sharing a Lolpros profile into one row (+N accounts) across the whole ladder"),
     db: Session = Depends(get_db),
 ):
     """Scout leaderboard. Default sort = CSS desc."""
     from datetime import date, timedelta
 
+    from ..services import cache
+
     min_games = min_games if min_games is not None else settings.min_games
+
+    # Cache the full response (user-independent; per-user state comes from
+    # /watchlist). Repeat navigation with the same filters is then instant;
+    # cache.clear() is called after ingestion/recompute so it never goes stale.
+    cache_key = (
+        "players", role, patch, min_games, sort, limit, offset, fa,
+        contract_within_days, max_age, min_age, residency, country, pro_only,
+        rising_only, include_unresolved, tier, smurf, region, group_accounts,
+    )
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     # ---- ONE row per puuid (SQL-level dedup) ----
     # A player has multiple PlayerAggregate rows (one per patch × role). The
@@ -668,29 +684,27 @@ def list_players(
     # already-unique rows.
     from sqlalchemy import func as _func
 
-    base_filter = db.query(PlayerAggregate.id).filter(
-        PlayerAggregate.games_played >= min_games
-    )
-    if role:
-        base_filter = base_filter.filter(PlayerAggregate.role == role.upper())
-    if patch:
-        base_filter = base_filter.filter(PlayerAggregate.patch == patch)
-
     # Pick ONE aggregate per puuid: the one that maximizes
     # `games_played * 1_000_000 + id`. With max(id)=24k and max(games)=95
     # this composite is collision-free per puuid (id < 1M is the invariant).
     # Tiebreaker is "highest id wins" → newest aggregate, which is also the
     # most desirable when patches tie.
+    #
+    # The role/patch/min_games constraints are applied DIRECTLY here (an
+    # earlier version wrapped them in `id IN (base_filter subquery)`, which is
+    # logically identical but forced SQLite to materialize the id set — a big
+    # chunk of the endpoint's latency). Filtering inline lets the planner use
+    # the (role, patch, games_played) index instead.
     rank_expr = (PlayerAggregate.games_played * 1_000_000 + PlayerAggregate.id)
-    primary = (
-        db.query(
-            PlayerAggregate.puuid.label("puuid"),
-            _func.max(rank_expr).label("rank_val"),
-        )
-        .filter(PlayerAggregate.id.in_(base_filter.subquery()))
-        .group_by(PlayerAggregate.puuid)
-        .subquery()
-    )
+    primary_q = db.query(
+        PlayerAggregate.puuid.label("puuid"),
+        _func.max(rank_expr).label("rank_val"),
+    ).filter(PlayerAggregate.games_played >= min_games)
+    if role:
+        primary_q = primary_q.filter(PlayerAggregate.role == role.upper())
+    if patch:
+        primary_q = primary_q.filter(PlayerAggregate.patch == patch)
+    primary = primary_q.group_by(PlayerAggregate.puuid).subquery()
 
     q = (
         db.query(PlayerAggregate, Player)
@@ -725,7 +739,17 @@ def list_players(
     # with 8 games and dropped the real player with 32 games + CSS 64.
     # Reported case: KR `Departures#Kami` (32 games on the old puuid,
     # 8 games scattered across roles on the new one — the old wins).
-    _best_puuid_per_name = (
+    # Region codes (comma-separated OR). Parsed here so we can push them INTO
+    # the rename-dedup subquery below — the query planner otherwise MATERIALIZES
+    # it over every region (all 113k players) even when the caller wants one
+    # region. Grouping is per (region, name), so region-filtering it is a
+    # semantic no-op (the outer `region` filter would drop those groups anyway)
+    # but shrinks the materialization to just the requested region(s).
+    _region_codes = None
+    if region:
+        _region_codes = [r.strip().lower() for r in region.split(",") if r.strip()] or None
+
+    _bp_q = (
         db.query(
             Player.region.label("region"),
             Player.summoner_name.label("summoner_name"),
@@ -734,9 +758,10 @@ def list_players(
         .join(primary, primary.c.puuid == Player.puuid)
         .filter(Player.summoner_name.isnot(None))
         .filter(Player.summoner_name.like("%#%"))
-        .group_by(Player.region, Player.summoner_name)
-        .subquery()
     )
+    if _region_codes:
+        _bp_q = _bp_q.filter(Player.region.in_(_region_codes))
+    _best_puuid_per_name = _bp_q.group_by(Player.region, Player.summoner_name).subquery()
     q = q.join(
         _best_puuid_per_name,
         (_best_puuid_per_name.c.region == Player.region)
@@ -805,10 +830,9 @@ def list_players(
         q = q.filter(PlayerMeta.country == country)
 
     # Region filter — match Player.region exactly. Comma-separated for OR.
-    if region:
-        codes = [r.strip().lower() for r in region.split(",") if r.strip()]
-        if codes:
-            q = q.filter(Player.region.in_(codes))
+    # (Codes were parsed above and already pushed into the rename-dedup subquery.)
+    if _region_codes:
+        q = q.filter(Player.region.in_(_region_codes))
 
     # Smurf filter — three modes:
     #   "hide"          → drop everyone with smurf_score >= 0.5 (clean ladder)
@@ -862,15 +886,89 @@ def list_players(
     else:
         q = q.order_by(desc(PlayerAggregate.css_score))
 
-    # Total count for pagination — same query without limit/offset.
-    # Each row in `q` is now guaranteed to be one-per-puuid by the
-    # `primary` subquery join, so SQL OFFSET/LIMIT translates directly
-    # into deduped pagination (no +buffer +Python dedup needed).
-    total = q.count()
+    # ---- Group accounts by pro (Lolpros) — server-side, across the WHOLE ladder ----
+    # Every account sharing a `lolpros_slug` collapses into one row (the
+    # sort-topmost account is the "primary", the rest become +N siblings).
+    # Done here (not per-page in the browser) so a pro whose 5 accounts are
+    # scattered across pages still shows as a single "+4 accounts" line.
+    if group_accounts:
+        proj = q.with_entities(
+            PlayerAggregate.puuid.label("puuid"),
+            PlayerMeta.lolpros_slug.label("slug"),
+            Player.summoner_name.label("name"),
+            Player.region.label("region"),
+            PlayerAggregate.role.label("role"),
+            PlayerAggregate.games_played.label("games"),
+            PlayerAggregate.css_score.label("css"),
+        ).all()
+        groups: dict = {}
+        order: list = []
+        for r in proj:
+            key = r.slug or r.puuid  # accounts without a Lolpros profile stay solo (keyed by puuid)
+            g = groups.get(key)
+            if g is None:
+                g = {"primary": r.puuid, "siblings": []}
+                groups[key] = g
+                order.append(key)
+            g["siblings"].append({
+                "puuid": r.puuid, "summoner_name": r.name, "region": r.region,
+                "role": r.role, "games_played": r.games, "css_score": round(r.css or 0, 1),
+            })
+        total = len(order)
+        page_keys = order[offset: offset + limit]
+        page_primaries = [groups[k]["primary"] for k in page_keys]
+        collapsed = sum(len(groups[k]["siblings"]) - 1 for k in order)
 
-    rows = q.offset(offset).limit(limit).all()
+        full = {}
+        if page_primaries:
+            for a, p in q.filter(PlayerAggregate.puuid.in_(page_primaries)).all():
+                full[a.puuid] = (a, p)
+
+        out = []
+        for k in page_keys:
+            pair = full.get(groups[k]["primary"])
+            if not pair:
+                continue
+            a, p = pair
+            sibs = groups[k]["siblings"]
+            item = {
+                **_serialize_player(p, db),
+                "patch": a.patch,
+                "role": a.role,
+                "games_played": a.games_played,
+                "wins": a.wins,
+                "winrate": round((a.wins / a.games_played * 100) if a.games_played else 0, 1),
+                "css_score": round(a.css_score, 1),
+                "percentile_rank": a.percentile_rank,
+                "champion_pool_size": a.champion_pool_size,
+                "is_rising_star": bool(a.is_rising_star),
+                "smurf_score": round(p.smurf_score, 3) if p.smurf_score else None,
+            }
+            if len(sibs) > 1:
+                item["account_count"] = len(sibs)
+                item["accounts"] = sorted(sibs, key=lambda s: -(s["css_score"] or 0))
+            out.append(item)
+
+        result = {"total": total, "offset": offset, "limit": limit, "collapsed": collapsed, "items": out}
+        cache.put(cache_key, result)
+        return result
+
+    # Total + page in a SINGLE execution. The previous version ran the whole
+    # subquery-heavy query twice — once for q.count(), once for the page —
+    # which roughly doubled the cold latency. A window `COUNT(*) OVER ()`
+    # yields the full match count (ignoring LIMIT), read off any returned row.
+    # Each row in `q` is one-per-puuid via the `primary` join, so SQL
+    # OFFSET/LIMIT is already deduped pagination.
+    from sqlalchemy import func as _wf
+    rows = q.add_columns(_wf.count().over().label("_total")).offset(offset).limit(limit).all()
+    if rows:
+        total = rows[0][-1]
+    else:
+        # Empty page (offset past the end, or zero matches) — exact count.
+        total = q.count()
     out = []
-    for a, p in rows:
+    for row in rows:
+        a, p = row[0], row[1]
         out.append({
             **_serialize_player(p, db),
             "patch": a.patch,
@@ -884,12 +982,14 @@ def list_players(
             "is_rising_star": bool(a.is_rising_star),
             "smurf_score": round(p.smurf_score, 3) if p.smurf_score else None,
         })
-    return {
+    result = {
         "total": total,
         "offset": offset,
         "limit": limit,
         "items": out,
     }
+    cache.put(cache_key, result)
+    return result
 
 
 # ============================================================

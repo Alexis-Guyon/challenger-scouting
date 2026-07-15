@@ -197,7 +197,11 @@ async function loadPlayer(puuid) {
   // Header avatar: Riot in-game profile icon only (cleaner, more reliable
   // than scraped Leaguepedia headshots which often 404 or are outdated).
   const primaryAccount = (meta && (meta.accounts || [])[0]) || null;
-  const headerAvatarUrl = primaryAccount ? profileIconUrl(primaryAccount.profile_icon_id) : null;
+  // Prefer the player's OWN Riot summoner icon (captured on ingest for every
+  // player); fall back to the pro account's icon (Lolpros) when present.
+  const headerAvatarUrl =
+    (p.profile_icon_id ? profileIconUrl(p.profile_icon_id) : null)
+    || (primaryAccount ? profileIconUrl(primaryAccount.profile_icon_id) : null);
   const headerAvatar = headerAvatarUrl
     ? `<img class="header-avatar" src="${headerAvatarUrl}" alt="" onerror="this.style.display='none'"/>`
     : '<div class="header-avatar placeholder">?</div>';
@@ -212,10 +216,12 @@ async function loadPlayer(puuid) {
           <div style="margin-top:6px;font-size:13px;">${metaLine}</div>
         </div>
       </div>
-      <div style="text-align:right">
-        <div style="font-size:32px;font-weight:800;">${agg.css_score}</div>
-        <span class="score-pill ${scoreClass(agg.css_score)}">${scoreLabel(agg.css_score)}</span>
-        <div class="muted" style="margin-top:4px;">P${agg.percentile_rank} · ${agg.role} · ${agg.games_played} games · ${agg.winrate}% WR</div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
+        <div style="display:flex;align-items:baseline;gap:10px;">
+          <span class="css-hero ${scoreClass(agg.css_score)}">${agg.css_score}</span>
+          <span class="score-pill ${scoreClass(agg.css_score)}">${scoreLabel(agg.css_score)}</span>
+        </div>
+        <div class="muted" style="font-family:var(--f-mono);font-size:11px;letter-spacing:0.04em;">P${agg.percentile_rank} · ${agg.role} · ${agg.games_played} games · ${agg.winrate}% WR</div>
         <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px;">
           <button id="export-md" class="export-btn" style="font-size:11px;padding:6px 12px;" title="Download a clean Markdown dossier of this player — paste in Notion/Discord/Slack or share with staff.">📋 Markdown</button>
           <button id="export-pdf" class="export-btn" style="font-size:11px;padding:6px 12px;" title="Print to PDF via the browser (Ctrl+P → Save as PDF)">🖨 PDF</button>
@@ -462,21 +468,23 @@ async function loadPlayer(puuid) {
       datasets: [{
         label: p.summoner_name,
         data: RADAR_AXES.map(k => cats[k] || 0),
-        backgroundColor: 'rgba(245,158,11,0.22)',
-        borderColor: '#f59e0b',
-        pointBackgroundColor: '#34d399',
+        backgroundColor: 'rgba(139,92,246,0.18)',
+        borderColor: '#8b5cf6',
+        borderWidth: 2,
+        pointBackgroundColor: '#8b5cf6',
       },{
         label: 'Challenger median (50)',
         data: RADAR_AXES.map(() => 50),
-        backgroundColor: 'rgba(138,143,153,0.05)',
-        borderColor: 'rgba(138,143,153,0.5)',
-        borderDash: [4,4],
+        backgroundColor: 'rgba(92,92,102,0.04)',
+        borderColor: '#5c5c66',
+        borderDash: [4,3],
+        borderWidth: 1.4,
         pointRadius: 0,
       }]
     },
     options: {
-      scales: { r: { min: 0, max: 100, grid:{color:'#2a2e37'}, angleLines:{color:'#2a2e37'}, pointLabels:{color:'#ebeced'}, ticks:{display:false} } },
-      plugins: { legend: { labels: { color: '#ebeced' } } },
+      scales: { r: { min: 0, max: 100, grid:{color:'#22222a'}, angleLines:{color:'#22222a'}, pointLabels:{color:'#8a8a94', font:{size:11}}, ticks:{display:false} } },
+      plugins: { legend: { labels: { color: '#e5e5ea' } } },
     }
   });
 }
@@ -530,7 +538,7 @@ async function loadCssHistory(puuid) {
   patchOrder.sort((a, b) => (firstSeen[a] || '').localeCompare(firstSeen[b] || ''));
 
   // One dataset per role, aligned on patchOrder
-  const ROLE_COLORS = { TOP:'#f59e0b', JGL:'#34d399', MID:'#60a5fa', ADC:'#f87171', SUP:'#a78bfa' };
+  const ROLE_COLORS = { TOP:'#60a5fa', JGL:'#34d399', MID:'#f59e0b', ADC:'#f87171', SUP:'#a78bfa' };
   const datasets = roles.map(r => {
     const byPatch = Object.fromEntries(byRole[r].map(s => [s.patch, s]));
     return {
@@ -551,8 +559,8 @@ async function loadCssHistory(puuid) {
     data: { labels: patchOrder, datasets },
     options: {
       scales: {
-        x: { grid: { color: '#2a2e37' }, ticks: { color: '#8a8f99' }, title: { display: true, text: 'Patch', color: '#8a8f99' } },
-        y: { min: 0, max: 100, grid: { color: '#2a2e37' }, ticks: { color: '#ebeced' }, title: { display: true, text: 'CSS', color: '#8a8f99' } },
+        x: { grid: { color: '#22222a' }, ticks: { color: '#8a8a94' }, title: { display: true, text: 'Patch', color: '#8a8a94' } },
+        y: { min: 0, max: 100, grid: { color: '#22222a' }, ticks: { color: '#b4b4be' }, title: { display: true, text: 'CSS', color: '#8a8a94' } },
       },
       plugins: {
         legend: { labels: { color: '#ebeced' } },

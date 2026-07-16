@@ -16,7 +16,7 @@ set -euo pipefail
 
 REPO_URL="https://github.com/Alexis-Guyon/challenger-scouting.git"
 APP_DIR="/opt/scouting"
-DOMAIN="vps-bae259d0.vps.ovh.net"   # OVH hostname → used for automatic HTTPS
+DOMAIN="pinkward.lol"   # domain used for automatic HTTPS (A record → this VPS)
 
 say()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m[!] %s\033[0m\n' "$*"; }

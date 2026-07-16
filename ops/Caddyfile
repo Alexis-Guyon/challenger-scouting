@@ -1,16 +1,12 @@
-# Caddyfile — reverse proxy + automatic HTTPS (Let's Encrypt) for the
-# Challenger Scouting app on an OVH VPS.
+# Caddyfile — reverse proxy + automatic HTTPS (Let's Encrypt) for PINKWARD.
 #
-# Caddy obtains and renews a TLS cert automatically for the hostname below,
-# as long as it resolves to this server and ports 80/443 are open.
+# Caddy obtains and renews a TLS cert automatically for the domain below, as
+# long as it resolves to this server (A/AAAA record -> VPS IP) and ports
+# 80/443 are open (ops/setup-server.sh opens them via ufw).
 #
-# The OVH-provided hostname already points to the VPS, so it works out of the
-# box. If you later add your own domain, just change the line below and reload:
-#   systemctl reload caddy
-#
-# Ports 80 + 443 must be open (ops/setup-server.sh opens them via ufw).
+# To change the domain: edit the line below then `systemctl reload caddy`.
 
-vps-bae259d0.vps.ovh.net {
+pinkward.lol {
     encode zstd gzip
     reverse_proxy 127.0.0.1:8000
 

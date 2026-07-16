@@ -1,0 +1,4 @@
+# PINKWARD is a private, auth-gated internal tool (Riot Personal API Key).
+# It must not be indexed or crawled. Keep it out of all search engines.
+User-agent: *
+Disallow: /

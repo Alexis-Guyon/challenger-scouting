@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#ec4899"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.28" cy="0.32" r="0.75">
+      <stop offset="0" stop-color="#1a1226"/>
+      <stop offset="0.62" stop-color="#0a0a0d"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="#0a0a0d"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+  <rect x="0" y="0" width="1200" height="8" fill="url(#tile)"/>
+
+  <g transform="translate(150 232)">
+    <rect width="168" height="168" rx="42" fill="url(#tile)"/>
+    <g transform="translate(84 84) scale(2.6) translate(-22 -22)">
+      <path d="M7 22 Q22 7 37 22 Q22 37 7 22 Z" fill="none" stroke="#0a0a0d" stroke-width="3.2" stroke-linejoin="round"/>
+      <circle cx="22" cy="22" r="5.6" fill="#0a0a0d"/>
+      <circle cx="19.4" cy="19.4" r="1.8" fill="#ffffff"/>
+    </g>
+  </g>
+
+  <text x="368" y="300" font-family="Inter, Arial, sans-serif" font-weight="800" font-size="104" letter-spacing="1">
+    <tspan fill="#ec4899">PINK</tspan><tspan fill="#e5e5ea">WARD</tspan>
+  </text>
+  <text x="372" y="356" font-family="'JetBrains Mono', monospace" font-weight="500" font-size="26" letter-spacing="10" fill="#8a8a94">CHALLENGER SCOUTING</text>
+
+  <text x="150" y="470" font-family="Inter, Arial, sans-serif" font-weight="400" font-size="30" fill="#b4b4be">Multi-region SoloQ ladder · CSS scores · pro identity · recruitment pipeline</text>
+</svg>

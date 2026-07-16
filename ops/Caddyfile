@@ -6,6 +6,11 @@
 #
 # To change the domain: edit the line below then `systemctl reload caddy`.
 
+# www → apex redirect (needs a www A record pointing to this VPS too)
+www.pinkward.lol {
+    redir https://pinkward.lol{uri} permanent
+}
+
 pinkward.lol {
     encode zstd gzip
     reverse_proxy 127.0.0.1:8000

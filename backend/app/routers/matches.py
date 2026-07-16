@@ -22,7 +22,7 @@ from ..db import get_db
 from ..models import Match
 from ..services.riot_client import RiotClient
 
-router = APIRouter(prefix="/matches", tags=["matches"], dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/matches", tags=["matches"])  # public read
 
 
 # match_id → (cached_payload, expiry_epoch)

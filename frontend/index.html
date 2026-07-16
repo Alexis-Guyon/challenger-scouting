@@ -25,7 +25,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=18"/>
+<link rel="stylesheet" href="style.css?v=19"/>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
 <script>
@@ -69,7 +69,8 @@
     </label>
     <div id="login-err" class="login-err"></div>
     <button type="submit">Sign in</button>
-    <div class="login-foot">Auth-gated · No public signup · Contact an admin</div>
+    <button type="button" id="browse-guest" class="login-guest">Browse without an account →</button>
+    <div class="login-foot">Read-only public access · Sign in to scout, watch & edit</div>
   </form>
 </div>
 
@@ -133,7 +134,7 @@
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
           <span class="notif-dot"></span>
         </button>
-        <div class="user-chip">
+        <div class="user-chip" id="user-chip">
           <span class="user-avatar" id="user-avatar">HS</span>
           <span class="user-chip-text">
             <span class="user-chip-name" id="user-label">Head Scout</span>
@@ -143,6 +144,10 @@
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg>
           </button>
         </div>
+        <button id="login-cta" class="login-cta-btn" title="Sign in" style="display:none;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/></svg>
+          <span>Sign in</span>
+        </button>
       </header>
       <main id="app"></main>
     </div>
@@ -1012,11 +1017,11 @@
 <!-- Loaded in dependency order. No build step — each script defines
      functions on the global scope so cross-module references just work
      without import/export. -->
-<script src="js/api.js?v=18"></script>
-<script src="js/formatters.js?v=18"></script>
-<script src="js/ui.js?v=18"></script>
-<script src="js/views.js?v=18"></script>
-<script src="js/player.js?v=18"></script>
-<script src="js/boot.js?v=18"></script>
+<script src="js/api.js?v=19"></script>
+<script src="js/formatters.js?v=19"></script>
+<script src="js/ui.js?v=19"></script>
+<script src="js/views.js?v=19"></script>
+<script src="js/player.js?v=19"></script>
+<script src="js/boot.js?v=19"></script>
 </body>
 </html>

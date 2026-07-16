@@ -65,6 +65,25 @@ def get_current_user(
     return user
 
 
+def get_current_user_optional(
+    token: Optional[str] = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> Optional[User]:
+    """Like get_current_user but never raises: returns None for anonymous
+    visitors. Used by public read endpoints so the site is browsable
+    (read-only) without logging in, while write endpoints keep
+    require_editor (which does require a logged-in, non-viewer account)."""
+    if not token:
+        return None
+    data = decode_token(token)
+    if not data:
+        return None
+    user = db.get(User, int(data["sub"]))
+    if not user or not user.is_active:
+        return None
+    return user
+
+
 def require_admin(user: User = Depends(get_current_user)) -> User:
     if user.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin only")

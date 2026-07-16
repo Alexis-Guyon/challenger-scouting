@@ -33,7 +33,13 @@ async function API(path, opts = {}) {
   }
   const url = path.startsWith('http') ? path : (API_BASE + path);
   const res = await fetch(url, { ...opts, headers });
-  if (res.status === 401) { showLogin(); throw new Error('unauthorized'); }
+  if (res.status === 401) {
+    // A logged-in user with an expired token → bounce to login. An anonymous
+    // visitor (no token) hitting an auth-only endpoint just gets the error;
+    // we don't wall off the public read-only app.
+    if (getToken()) { clearAuth(); showLogin(); }
+    throw new Error('unauthorized');
+  }
   if (!res.ok) {
     const txt = await res.text();
     throw new Error(`${res.status}: ${txt}`);

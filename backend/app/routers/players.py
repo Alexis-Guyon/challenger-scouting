@@ -3,7 +3,7 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy import desc, exists
 from sqlalchemy.orm import Session
 
-from ..auth import get_current_user
+from ..auth import get_current_user, get_current_user_optional
 from ..config import settings
 from ..db import get_db
 from ..models import (
@@ -21,7 +21,10 @@ from ..models import (
 )
 from ..services.scoring import compute_css_for_aggregate
 
-router = APIRouter(prefix="/players", tags=["players"], dependencies=[Depends(get_current_user)])
+# Public read router: no router-level auth so the ladder / profiles are
+# browsable without logging in. Endpoints that surface per-user state
+# (e.g. is_watched) take an OPTIONAL user; there are no write endpoints here.
+router = APIRouter(prefix="/players", tags=["players"])
 
 
 def _serialize_player(p: Player, db: Session) -> dict:
@@ -156,7 +159,6 @@ def search_players(
 @router.get("/patches")
 def list_patches(
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
 ):
     """List patches we have aggregate data for, ordered by most-recent
     activity (max Match.game_creation desc).
@@ -221,7 +223,6 @@ def patch_impact(
     min_games_each: int = Query(default=10, ge=1, description="Min games on EACH patch"),
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
 ):
     """For each player who has CSS snapshots on BOTH patches, return the
     delta CSS_to - CSS_from. Sorted by biggest gainers first.
@@ -449,7 +450,7 @@ def player_history(
 def get_player(
     puuid: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_current_user_optional),
 ):
     p = db.get(Player, puuid)
     if not p:
@@ -542,10 +543,11 @@ def get_player(
         for r in recent
     ]
 
-    is_watched = (
-        db.query(WatchlistEntry)
+    is_watched = bool(
+        user
+        and db.query(WatchlistEntry)
         .filter_by(user_id=user.id, puuid=puuid)
-        .first() is not None
+        .first()
     )
 
     return {
@@ -562,7 +564,6 @@ def player_matchups(
     puuid: str,
     role: str | None = Query(default=None, description="Filter to one role (TOP/JGL/MID/ADC/SUP)"),
     min_games: int = Query(default=2, ge=1, le=50),
-    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """For each opponent champion the player has faced (same role, opposite
@@ -999,7 +1000,7 @@ def list_players(
 @router.get("/{puuid}/dossier", response_class=PlainTextResponse)
 def player_dossier(
     puuid: str,
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_current_user_optional),
     db: Session = Depends(get_db),
 ):
     """Self-contained Markdown scouting report. Designed to be saved as a
@@ -1051,6 +1052,7 @@ def player_dossier(
         .order_by(desc(ScoutNote.created_at))
         .limit(20)
         .all()
+        if user else []
     )
 
     # CSS snapshots for trend section
@@ -1068,7 +1070,7 @@ def player_dossier(
     name = p.summoner_name or "(unknown)"
     lines.append(f"# Scouting Dossier — {name}")
     lines.append("")
-    lines.append(f"_Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} by {user.username}_")
+    lines.append(f"_Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} by {user.username if user else 'guest'}_")
     lines.append("")
 
     # --- Identity ---

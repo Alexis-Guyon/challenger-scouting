@@ -8,12 +8,20 @@ function showApp() {
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('app-shell').style.display = 'block';
   const u = currentUser();
+  const chip = document.getElementById('user-chip');
+  const cta = document.getElementById('login-cta');
   if (u) {
     document.getElementById('user-label').textContent = u.username;
     const org = document.querySelector('.user-chip-org');
     if (org) org.textContent = (u.org || 'workspace').toUpperCase();
     const av = document.getElementById('user-avatar');
     if (av) av.textContent = (u.username || '?').slice(0, 2).toUpperCase();
+    if (chip) chip.style.display = '';
+    if (cta) cta.style.display = 'none';
+  } else {
+    // Anonymous visitor → show the "Sign in" button instead of the user chip.
+    if (chip) chip.style.display = 'none';
+    if (cta) cta.style.display = '';
   }
   // Admin is admin-only — hide the nav entry for analysts (the API enforces
   // it too, so this is just UX; a non-admin never sees a broken panel).
@@ -21,10 +29,16 @@ function showApp() {
   document.querySelectorAll('.nav-item[data-view="admin"]').forEach(a => {
     a.style.display = isAdmin ? '' : 'none';
   });
-  // Read-only accounts: a `role-viewer` body class hides every write control
+  // Watchlist + Alerts are per-user features → hide them for anonymous
+  // visitors (the API requires auth for them too).
+  document.querySelectorAll('.nav-item[data-view="watchlist"], .nav-item[data-view="alerts"]').forEach(a => {
+    a.style.display = u ? '' : 'none';
+  });
+  // Read-only mode: a `role-viewer` body class hides every write control
   // (watchlist star, scout notes, smurf label, alert builder, kanban remove).
-  // The API also rejects writes for viewers (require_editor → 403).
-  document.body.classList.toggle('role-viewer', !!u && u.role === 'viewer');
+  // Applies to explicit viewer accounts AND anonymous visitors. The API also
+  // rejects writes for both (require_editor → 401/403).
+  document.body.classList.toggle('role-viewer', !u || u.role === 'viewer');
   refreshIcons();
   loadSidebarPatch();
 }
@@ -59,7 +73,20 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
 
 document.getElementById('logout-btn').addEventListener('click', () => {
   clearAuth();
-  showLogin();
+  // Log out → stay on the public app (read-only), don't wall it off.
+  showApp();
+  setView('leaderboard');
+});
+
+// Anonymous "Sign in" button (topbar) → open the login screen.
+document.getElementById('login-cta')?.addEventListener('click', () => showLogin());
+
+// "Browse without an account" on the login screen → enter the public app.
+document.getElementById('browse-guest')?.addEventListener('click', () => {
+  showApp();
+  const parsed = parseHash();
+  if (parsed) setView(parsed.view, parsed.arg);
+  else setView('leaderboard');
 });
 
 /* ---------------- GLOSSARY ---------------- */
@@ -169,6 +196,12 @@ function setView(name, arg) {
   // Admin route is admin-only — analysts get bounced to the ladder even via a
   // direct #/admin deep-link. (The /admin API enforces this server-side too.)
   if (name === 'admin' && currentUser()?.role !== 'admin') {
+    name = 'leaderboard';
+    arg = undefined;
+  }
+  // Watchlist + Alerts require an account — anonymous visitors get bounced to
+  // the ladder (and prompted to sign in) rather than hitting an empty 401 view.
+  if ((name === 'watchlist' || name === 'alerts') && !currentUser()) {
     name = 'leaderboard';
     arg = undefined;
   }

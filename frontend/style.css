@@ -827,6 +827,27 @@ tr.lb-row:hover .tier-icon { transform: scale(1.08); }
   text-align: center; font-family: var(--f-mono); font-size: 10px;
   letter-spacing: 0.08em; color: var(--dim);
 }
+/* Secondary "browse without an account" button on the login card. */
+.login-guest {
+  background: transparent !important; border: 1px solid var(--line) !important;
+  color: var(--muted) !important; font-weight: 600 !important;
+  font-size: 12.5px !important; margin-top: 8px !important;
+  transition: color .15s, border-color .15s;
+}
+.login-guest:hover { color: var(--text) !important; border-color: var(--accent) !important; }
+
+/* Topbar "Sign in" button shown to anonymous visitors (replaces user-chip). */
+.login-cta-btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 13px; border-radius: 6px;
+  background: var(--gradient-accent); color: #0a0a0d;
+  border: none; cursor: pointer;
+  font-family: var(--f-sans); font-weight: 700; font-size: 12.5px;
+  box-shadow: 0 4px 14px rgba(139, 92, 246, 0.3);
+  transition: transform .12s, box-shadow .12s;
+}
+.login-cta-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(139, 92, 246, 0.42); }
+.login-cta-btn svg { flex-shrink: 0; }
 
 /* ---------- Watchlist star ---------- */
 .star {

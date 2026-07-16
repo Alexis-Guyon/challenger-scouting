@@ -23,13 +23,13 @@ from ..models import (
     Tournament,
     User,
 )
-router = APIRouter(tags=["tournaments"], dependencies=[Depends(get_current_user)])
+router = APIRouter(tags=["tournaments"])  # public read
 
 # --- separate sub-router for /tournament-matches/* ---
-match_router = APIRouter(prefix="/tournament-matches", tags=["tournaments"], dependencies=[Depends(get_current_user)])
+match_router = APIRouter(prefix="/tournament-matches", tags=["tournaments"])  # public read
 
 # --- /teams/* — pro team scouting page ---
-team_router = APIRouter(prefix="/teams", tags=["teams"], dependencies=[Depends(get_current_user)])
+team_router = APIRouter(prefix="/teams", tags=["teams"])  # public read
 
 
 # ---------------------------------------------------------------
@@ -223,7 +223,7 @@ def _aggregate_tournament_stats(rows: list[OfficialMatchParticipant], matches_by
 
 
 @router.get("/players/{puuid}/tournaments")
-def player_tournament_stats(puuid: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def player_tournament_stats(puuid: str, db: Session = Depends(get_db)):
     p = db.get(Player, puuid)
     if not p:
         raise HTTPException(404, "player not found")
@@ -344,7 +344,6 @@ def player_tournament_stats(puuid: str, user: User = Depends(get_current_user), 
 def roster_compare(
     puuid: str,
     role: str | None = Query(default=None, description="Override role (TOP/JGL/MID/ADC/SUP)"),
-    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """

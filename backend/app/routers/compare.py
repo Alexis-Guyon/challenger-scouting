@@ -6,7 +6,7 @@ from ..auth import get_current_user
 from ..db import get_db
 from ..models import Player, PlayerAggregate, PlayerMeta, RankSnapshot
 
-router = APIRouter(prefix="/compare", tags=["compare"], dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/compare", tags=["compare"])  # public read
 
 
 @router.get("")

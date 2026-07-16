@@ -19,7 +19,7 @@ from ..auth import get_current_user
 from ..db import get_db
 from ..models import ChampionPool, Player, PlayerMeta, RankSnapshot
 
-router = APIRouter(prefix="/champions", tags=["champions"], dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/champions", tags=["champions"])  # public read
 
 
 def _champion_icon_url(champion_id: int) -> str:

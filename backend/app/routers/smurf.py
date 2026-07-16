@@ -10,11 +10,13 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from ..auth import get_current_user, require_editor
+from ..auth import get_current_user, get_current_user_optional, require_editor
 from ..db import get_db
 from ..models import Player, SmurfLabel, User
 
-router = APIRouter(prefix="/smurf", tags=["smurf"], dependencies=[Depends(get_current_user)])
+# Public read (consensus votes visible to anon); writes keep require_editor and
+# the personal label history keeps an explicit auth dependency.
+router = APIRouter(prefix="/smurf", tags=["smurf"])
 
 
 @router.post("/label/{puuid}", dependencies=[Depends(require_editor)])
@@ -67,15 +69,17 @@ def delete_label(
 @router.get("/label/{puuid}")
 def get_label(
     puuid: str,
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_current_user_optional),
     db: Session = Depends(get_db),
 ):
     """Return the current scout's label for this player (if any) plus an
-    aggregate count across all scouts (cross-team consensus signal)."""
+    aggregate count across all scouts (cross-team consensus signal).
+    Anonymous visitors see the consensus but no personal label."""
     mine = (
         db.query(SmurfLabel)
         .filter_by(puuid=puuid, user_id=user.id)
         .first()
+        if user else None
     )
     yes = db.query(SmurfLabel).filter_by(puuid=puuid, label=True).count()
     no = db.query(SmurfLabel).filter_by(puuid=puuid, label=False).count()
@@ -89,7 +93,7 @@ def get_label(
 
 @router.get("/labels")
 def list_my_labels(
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),  # personal history → auth required
     db: Session = Depends(get_db),
 ):
     """All labels the current scout has set (for a personal label history view)."""

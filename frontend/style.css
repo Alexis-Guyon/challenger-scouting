@@ -109,6 +109,23 @@ a:hover { color: var(--magenta); text-decoration: none; }
 
 @keyframes shimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
 
+/* ---------- Read-only (viewer) role — hide every write control ---------- */
+.role-viewer .star,                 /* watchlist toggle (ladder + profile) */
+.role-viewer #smurf-label-btn,      /* manual smurf label */
+.role-viewer .note-input,           /* scout notes textarea */
+.role-viewer #add-note,             /* save note */
+.role-viewer .note .delete,         /* delete a note */
+.role-viewer .kanban-remove,        /* remove from watchlist */
+.role-viewer #lb-new-list,          /* "New scout list" CTA */
+.role-viewer .alerts-grid > .card,  /* alert rule builder */
+.role-viewer .al-test,
+.role-viewer .al-delete,
+.role-viewer .alert-toggle,
+.role-viewer .tag-input {
+  display: none !important;
+}
+.role-viewer .kanban-card { cursor: default; }  /* no drag affordance */
+
 /* ---------- App shell (sidebar + topbar + content) ---------- */
 .app-grid {
   display: grid;

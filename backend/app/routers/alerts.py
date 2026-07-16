@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-from ..auth import get_current_user
+from ..auth import get_current_user, require_editor
 from ..db import get_db
 from ..models import AlertHistory, AlertRule, User
 
@@ -55,7 +55,7 @@ def list_rules(user: User = Depends(get_current_user), db: Session = Depends(get
     return {"rules": [_serialize_rule(r) for r in rules]}
 
 
-@router.post("/rules")
+@router.post("/rules", dependencies=[Depends(require_editor)])
 def create_rule(payload: RuleIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     rule = AlertRule(
         user_id=user.id,
@@ -71,7 +71,7 @@ def create_rule(payload: RuleIn, user: User = Depends(get_current_user), db: Ses
     return _serialize_rule(rule)
 
 
-@router.patch("/rules/{rule_id}")
+@router.patch("/rules/{rule_id}", dependencies=[Depends(require_editor)])
 def update_rule(rule_id: int, payload: RuleUpdate, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     rule = db.get(AlertRule, rule_id)
     if not rule or rule.user_id != user.id:
@@ -88,7 +88,7 @@ def update_rule(rule_id: int, payload: RuleUpdate, user: User = Depends(get_curr
     return _serialize_rule(rule)
 
 
-@router.delete("/rules/{rule_id}")
+@router.delete("/rules/{rule_id}", dependencies=[Depends(require_editor)])
 def delete_rule(rule_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     rule = db.get(AlertRule, rule_id)
     if not rule or rule.user_id != user.id:
@@ -98,7 +98,7 @@ def delete_rule(rule_id: int, user: User = Depends(get_current_user), db: Sessio
     return {"deleted": rule_id}
 
 
-@router.post("/rules/{rule_id}/test")
+@router.post("/rules/{rule_id}/test", dependencies=[Depends(require_editor)])
 def test_rule(rule_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Send a one-off ping to the rule's webhook to verify it's reachable."""
     from ..services.alerts import _post_webhook

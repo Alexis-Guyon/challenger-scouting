@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-from ..auth import get_current_user
+from ..auth import get_current_user, require_editor
 from ..db import get_db
 from ..models import Player, PlayerAggregate, RankSnapshot, ScoutNote, User, WatchlistEntry
 
@@ -55,7 +55,7 @@ def list_watchlist(user: User = Depends(get_current_user), db: Session = Depends
     return out
 
 
-@router.patch("/watchlist/{puuid}/stage")
+@router.patch("/watchlist/{puuid}/stage", dependencies=[Depends(require_editor)])
 def set_watchlist_stage(
     puuid: str,
     stage: str = Form(...),
@@ -75,7 +75,7 @@ def set_watchlist_stage(
     return {"ok": True, "puuid": puuid, "stage": stage}
 
 
-@router.post("/watchlist")
+@router.post("/watchlist", dependencies=[Depends(require_editor)])
 def add_watchlist(
     puuid: str = Form(...),
     tag: str = Form(""),
@@ -97,7 +97,7 @@ def add_watchlist(
     return {"ok": True, "puuid": puuid, "tag": tag}
 
 
-@router.delete("/watchlist/{puuid}")
+@router.delete("/watchlist/{puuid}", dependencies=[Depends(require_editor)])
 def remove_watchlist(
     puuid: str,
     user: User = Depends(get_current_user),
@@ -129,7 +129,7 @@ def list_notes(
     ]
 
 
-@router.post("/notes/{puuid}")
+@router.post("/notes/{puuid}", dependencies=[Depends(require_editor)])
 def add_note(
     puuid: str,
     content: str = Form(...),
@@ -146,7 +146,7 @@ def add_note(
     return {"id": n.id, "content": n.content, "created_at": n.created_at.isoformat()}
 
 
-@router.delete("/notes/{note_id}")
+@router.delete("/notes/{note_id}", dependencies=[Depends(require_editor)])
 def delete_note(
     note_id: int,
     user: User = Depends(get_current_user),

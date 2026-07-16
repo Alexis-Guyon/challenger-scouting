@@ -10,14 +10,14 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from ..auth import get_current_user
+from ..auth import get_current_user, require_editor
 from ..db import get_db
 from ..models import Player, SmurfLabel, User
 
 router = APIRouter(prefix="/smurf", tags=["smurf"], dependencies=[Depends(get_current_user)])
 
 
-@router.post("/label/{puuid}")
+@router.post("/label/{puuid}", dependencies=[Depends(require_editor)])
 def upsert_label(
     puuid: str,
     label: bool = True,
@@ -49,7 +49,7 @@ def upsert_label(
     return {"puuid": puuid, "label": bool(label)}
 
 
-@router.delete("/label/{puuid}")
+@router.delete("/label/{puuid}", dependencies=[Depends(require_editor)])
 def delete_label(
     puuid: str,
     user: User = Depends(get_current_user),

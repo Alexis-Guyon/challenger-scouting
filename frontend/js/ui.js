@@ -15,6 +15,16 @@ function showApp() {
     const av = document.getElementById('user-avatar');
     if (av) av.textContent = (u.username || '?').slice(0, 2).toUpperCase();
   }
+  // Admin is admin-only — hide the nav entry for analysts (the API enforces
+  // it too, so this is just UX; a non-admin never sees a broken panel).
+  const isAdmin = !!u && u.role === 'admin';
+  document.querySelectorAll('.nav-item[data-view="admin"]').forEach(a => {
+    a.style.display = isAdmin ? '' : 'none';
+  });
+  // Read-only accounts: a `role-viewer` body class hides every write control
+  // (watchlist star, scout notes, smurf label, alert builder, kanban remove).
+  // The API also rejects writes for viewers (require_editor → 403).
+  document.body.classList.toggle('role-viewer', !!u && u.role === 'viewer');
   refreshIcons();
   loadSidebarPatch();
 }
@@ -156,6 +166,12 @@ const navLinks = document.querySelectorAll('nav a');
 //   #/team/<code>        → setView('team', '<code>')
 //   #/leaderboard        → setView('leaderboard')
 function setView(name, arg) {
+  // Admin route is admin-only — analysts get bounced to the ladder even via a
+  // direct #/admin deep-link. (The /admin API enforces this server-side too.)
+  if (name === 'admin' && currentUser()?.role !== 'admin') {
+    name = 'leaderboard';
+    arg = undefined;
+  }
   navLinks.forEach(a => a.classList.toggle('active', a.dataset.view === name));
   const tpl = document.getElementById('tpl-' + name);
   if (!tpl) {

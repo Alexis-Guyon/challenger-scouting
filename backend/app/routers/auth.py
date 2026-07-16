@@ -56,8 +56,8 @@ def create_user(
 ):
     if db.query(User).filter_by(username=username).first():
         raise HTTPException(status_code=400, detail="username already exists")
-    if role not in ("admin", "analyst"):
-        raise HTTPException(status_code=400, detail="role must be admin or analyst")
+    if role not in ("admin", "analyst", "viewer"):
+        raise HTTPException(status_code=400, detail="role must be admin, analyst or viewer")
     u = User(
         username=username, password_hash=hash_password(password),
         role=role, org=org, created_at=datetime.now(timezone.utc),

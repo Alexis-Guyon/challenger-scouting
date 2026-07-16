@@ -69,3 +69,12 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     if user.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin only")
     return user
+
+
+# Roles: admin > analyst (can read + write) > viewer (read-only).
+# Attach `require_editor` to any endpoint that mutates data so a viewer
+# account is blocked server-side (the frontend also hides write controls).
+def require_editor(user: User = Depends(get_current_user)) -> User:
+    if user.role == "viewer":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="read-only account")
+    return user

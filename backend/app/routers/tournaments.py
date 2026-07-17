@@ -942,24 +942,105 @@ def team_detail(code: str, db: Session = Depends(get_db)):
             "opponent_logo": opp.image_url if opp else None,
         })
 
-    # --- Current roster from PlayerMeta (most reliable: Lolpros-sourced) ---
-    # Match by team_tag first (perfect), fall back to team_name. Both
-    # name and tag are stored on PlayerMeta.current_team / .current_team_tag.
-    roster_q = (
-        db.query(PlayerMeta)
-        .filter(PlayerMeta.is_pro == True)  # noqa: E712
-        .filter(PlayerMeta.is_retired == False)  # noqa: E712  drop ex-members
+    # --- Current roster ---
+    # Prefer CurrentLECRoster: the authoritative 5 official starters per team
+    # (from lolesports) — no coaches/subs, exactly one per role. This avoids the
+    # PlayerMeta pitfalls where random "TAG …" ranked smurfs or ex-players turned
+    # coach (still tagged with their old player role) leak into the roster.
+    # Each starter is enriched with SoloQ CSS/rank when we can link them to a
+    # tracked account (by lolesports id, then by name). Teams absent from this
+    # table (non-LEC / synthetic) fall back to the PlayerMeta scan below.
+    from ..models import RankSnapshot
+    ROLE_ORDER = {"Top": 0, "Jungle": 1, "Mid": 2, "Bot": 3, "Support": 4,
+                  "TOP": 0, "JGL": 1, "MID": 2, "ADC": 3, "SUP": 4}
+    LEC_ROLE = {"top": "TOP", "jungle": "JGL", "mid": "MID", "bottom": "ADC", "support": "SUP"}
+
+    lec_rows = (
+        db.query(CurrentLECRoster).filter(CurrentLECRoster.team_code.ilike(team.code)).all()
+        if team.code else []
     )
-    if team.code:
-        roster_q = roster_q.filter(
-            (PlayerMeta.current_team_tag == team.code)
-            | (PlayerMeta.current_team == team.name)
-        )
-    else:
-        roster_q = roster_q.filter(PlayerMeta.current_team == team.name)
-    metas = roster_q.all()
 
     roster: list[dict] = []
+
+    if lec_rows:
+        meta_by_les = {
+            m.lolesports_id: m
+            for m in db.query(PlayerMeta).filter(PlayerMeta.lolesports_id.isnot(None)).all()
+            if m.lolesports_id
+        }
+
+        def _link_account(lr):
+            """Best tracked (Player, PlayerMeta) for an official roster entry, or (None, None)."""
+            meta = meta_by_les.get(lr.pro_player_id)
+            if meta:
+                return db.get(Player, meta.puuid), meta
+            # Name match: accounts usually carry the team tag ("GX Lot#…").
+            core = (lr.player_name or "").strip()
+            if team.code and core.upper().startswith(team.code.upper() + " "):
+                core = core[len(team.code) + 1:].strip()
+            for needle in (f"{team.code} {core}", core):
+                if not needle or len(needle.strip()) < 4:
+                    continue
+                cand = (
+                    db.query(Player)
+                    .join(PlayerAggregate, PlayerAggregate.puuid == Player.puuid)
+                    .filter(Player.summoner_name.ilike(f"%{needle.strip()}%"))
+                    .order_by(desc(PlayerAggregate.games_played))
+                    .first()
+                )
+                if cand:
+                    return cand, db.get(PlayerMeta, cand.puuid)
+            return None, None
+
+        seen_roles: set[str] = set()
+        for lr in lec_rows:
+            role = LEC_ROLE.get((lr.role or "").lower())
+            if role is None or role in seen_roles:
+                continue
+            seen_roles.add(role)
+            player, meta = _link_account(lr)
+            agg = rank = None
+            if player:
+                agg = (
+                    db.query(PlayerAggregate).filter_by(puuid=player.puuid)
+                    .order_by(desc(PlayerAggregate.games_played)).first()
+                )
+                rank = (
+                    db.query(RankSnapshot).filter_by(puuid=player.puuid)
+                    .order_by(desc(RankSnapshot.snapshot_date)).first()
+                )
+            roster.append({
+                "puuid": player.puuid if player else None,
+                "summoner_name": player.summoner_name if player else lr.player_name,
+                "leaguepedia_id": (meta.leaguepedia_id if meta else None) or lr.player_name,
+                "role": role,
+                "country": meta.country if meta else None,
+                "age": meta.age if meta else None,
+                "player_image_url": meta.player_image_url if meta else None,
+                "tier": rank.tier if rank else None,
+                "lp": rank.lp if rank else None,
+                "css": round(agg.css_score, 1) if agg else None,
+                "css_role": agg.role if agg else None,
+                "games": agg.games_played if agg else 0,
+            })
+        roster.sort(key=lambda r: ROLE_ORDER.get(r.get("role") or "", 99))
+        metas = []  # skip fallback
+    else:
+        metas = (
+            db.query(PlayerMeta)
+            .filter(PlayerMeta.is_pro == True)  # noqa: E712
+            .filter(PlayerMeta.is_retired == False)  # noqa: E712  drop ex-members
+            .filter(
+                (PlayerMeta.current_team_tag == team.code)
+                | (PlayerMeta.current_team == team.name)
+            )
+            if team.code else
+            db.query(PlayerMeta)
+            .filter(PlayerMeta.is_pro == True)  # noqa: E712
+            .filter(PlayerMeta.is_retired == False)  # noqa: E712
+            .filter(PlayerMeta.current_team == team.name)
+        ).all()
+
     if metas:
         # Pull each member's primary aggregate (most-played) for headline CSS
         puuids = [m.puuid for m in metas]

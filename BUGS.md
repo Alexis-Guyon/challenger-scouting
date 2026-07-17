@@ -68,20 +68,28 @@ et toute action nécessitant un compte admin.
   → « Natus Vincere »). Cliquer BDS/KOI tombait donc sur un 404.
 - **Correctif** : liste mise à jour → `G2, FNC, KC, MKOI, TH, SHFT, SK, VIT, GX, NAVI`.
 
-### 11. Roster : rôles en double / CSS 0 / comptes alternatifs — ✅ corrigé
-- **Où** : `team_detail` [tournaments.py:948+](backend/app/routers/tournaments.py#L948).
-- **Constat** : le roster listait **toutes** les lignes `PlayerMeta` taggées à l'équipe,
-  soit un rôle affiché plusieurs fois (2 JGL, 2 MID, 2 SUP…), des rôles manquants, des
-  comptes smurf à CSS 0 et des comptes sans rôle (ex. `IDGAF#2109` sur G2).
-- **Correctif** : construction du roster en deux passes — (1) un représentant par pro
-  (`leaguepedia_id` → `lolpros_slug` → `puuid`, compte le plus joué), (2) un titulaire par
-  rôle (le plus joué) + suppression des comptes sans rôle canonique. Ajout du filtre
-  `is_retired == False`. Résultat vérifié en local : plus aucun rôle en double sur les 10
-  équipes LEC (G2/FNC/KC/GX/SHFT = 5‑man propres).
-- **Limite restante (données, pas logique)** : certaines équipes affichent < 5 joueurs
-  (MKOI, TH, SK, VIT, NAVI) car tous les comptes titulaires ne sont pas encore matchés dans
-  le snapshot Lolpros/Leaguepedia → nécessiterait un **re‑sync pro‑identité** (job admin)
-  pour être complet.
+### 11. Roster : mauvais joueurs / coachs / rôles en double / CSS 0 — ✅ corrigé
+- **Où** : `team_detail` [tournaments.py:945+](backend/app/routers/tournaments.py#L945).
+- **Constat** : le roster était construit depuis **toutes** les lignes `PlayerMeta` taggées à
+  l'équipe (matching par tag SoloQ). Conséquences :
+  - Des **comptes SoloQ au hasard** taggés « SK … » remontaient à la place des vrais joueurs
+    (ex. SK affichait « Expedition 28 / iladra / Shun » au lieu de Skeanz / LIDER…).
+  - Des **coachs / ex‑joueurs** apparaissaient comme titulaires : un ex‑jungler devenu coach
+    garde son ancien rôle de joueur dans les données (`meta.role = role or meta.role`,
+    [lolpros.py:351](backend/app/services/lolpros.py#L351)) → **ex. « Kesha » (coach) affiché en JGL**.
+  - Rôles en double (2 JGL, 2 MID, 2 SUP), rôles manquants, comptes smurf à CSS 0.
+- **Cause racine** : `PlayerMeta` (SoloQ/Lolpros) ne sait pas qui est titulaire vs staff vs
+  smurf. La table **`current_lec_roster`** contient pourtant les **5 titulaires officiels**
+  par équipe (source lolesports, propre), mais l'endpoint l'**ignorait**.
+- **Correctif** : le roster est désormais construit **depuis `current_lec_roster`** (5 titulaires
+  officiels, un par rôle, sans coach ni smurf), enrichi du **CSS/rang SoloQ** quand on peut
+  relier le titulaire à un compte tracké (par `lolesports_id`, puis par nom). Fallback vers
+  l'ancien scan `PlayerMeta` (dédupliqué par pro puis par rôle, `is_retired == False`) pour les
+  équipes hors LEC. Vérifié en local sur les 10 équipes : **5 titulaires corrects, 0 doublon,
+  0 coach** (SK = Wunder/Skeanz/LIDER/Jopa/Mikyx).
+- **Limite restante (données)** : un titulaire sans compte SoloQ tracké s'affiche avec son nom
+  + rôle mais **CSS « — »** (ex. Jopa, Mikyx). Le lier nécessiterait un re‑sync pro‑identité
+  (job admin).
 
 ---
 

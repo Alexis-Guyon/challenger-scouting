@@ -945,7 +945,11 @@ def team_detail(code: str, db: Session = Depends(get_db)):
     # --- Current roster from PlayerMeta (most reliable: Lolpros-sourced) ---
     # Match by team_tag first (perfect), fall back to team_name. Both
     # name and tag are stored on PlayerMeta.current_team / .current_team_tag.
-    roster_q = db.query(PlayerMeta).filter(PlayerMeta.is_pro == True)  # noqa: E712
+    roster_q = (
+        db.query(PlayerMeta)
+        .filter(PlayerMeta.is_pro == True)  # noqa: E712
+        .filter(PlayerMeta.is_retired == False)  # noqa: E712  drop ex-members
+    )
     if team.code:
         roster_q = roster_q.filter(
             (PlayerMeta.current_team_tag == team.code)
@@ -980,7 +984,39 @@ def team_detail(code: str, db: Session = Depends(get_db)):
         ):
             latest_ranks.setdefault(r.puuid, r)
 
-        for meta in metas:
+        def _games(m):
+            a = agg_by_puuid.get(m.puuid)
+            return a.games_played if a else -1
+
+        # Canonical role buckets (accept both the Lolpros "Top/Jungle/Mid/Bot/
+        # Support" spelling and the short "TOP/JGL/MID/ADC/SUP" one).
+        ROLE_ORDER = {"Top": 0, "Jungle": 1, "Mid": 2, "Bot": 3, "Support": 4,
+                      "TOP": 0, "JGL": 1, "MID": 2, "ADC": 3, "SUP": 4}
+
+        # A pro often has several tracked accounts, each a PlayerMeta row tagged
+        # to the team — without dedup the roster shows the same player twice and
+        # their low-CSS smurf accounts. Collapse in two passes:
+        #   1) one representative per pro (leaguepedia_id → lolpros_slug → puuid)
+        #   2) one starter per role (most games) — accounts with no canonical
+        #      role are mis-tagged smurfs and are dropped, so the roster reads
+        #      as a clean 5-man rather than a pile of alt accounts.
+        best_by_pro: dict[str, PlayerMeta] = {}
+        for m in metas:
+            pro_key = m.leaguepedia_id or m.lolpros_slug or m.puuid
+            cur = best_by_pro.get(pro_key)
+            if cur is None or _games(m) > _games(cur):
+                best_by_pro[pro_key] = m
+
+        best_by_role: dict[int, PlayerMeta] = {}
+        for m in best_by_pro.values():
+            slot = ROLE_ORDER.get(m.role or "")
+            if slot is None:
+                continue  # unknown role → drop mis-tagged account
+            cur = best_by_role.get(slot)
+            if cur is None or _games(m) > _games(cur):
+                best_by_role[slot] = m
+
+        for meta in best_by_role.values():
             agg = agg_by_puuid.get(meta.puuid)
             rank = latest_ranks.get(meta.puuid)
             p = players_by_puuid.get(meta.puuid)
@@ -998,9 +1034,7 @@ def team_detail(code: str, db: Session = Depends(get_db)):
                 "css_role": agg.role if agg else None,
                 "games": agg.games_played if agg else 0,
             })
-        # Order roster by canonical role: TOP, JGL, MID, ADC, SUP, then unknowns
-        ROLE_ORDER = {"Top": 0, "Jungle": 1, "Mid": 2, "Bot": 3, "Support": 4,
-                      "TOP": 0, "JGL": 1, "MID": 2, "ADC": 3, "SUP": 4}
+        # Order roster by canonical role: TOP, JGL, MID, ADC, SUP.
         roster.sort(key=lambda r: ROLE_ORDER.get(r.get("role") or "", 99))
 
     return {

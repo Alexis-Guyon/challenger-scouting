@@ -568,7 +568,7 @@ async function initTeam(code) {
           <button id="team-go">Open</button>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;">
-          ${['G2','FNC','KC','MKOI','TH','BDS','SK','VIT','GX','KOI'].map(c => `<button class="quick-pill team-quick" data-code="${c}">${c}</button>`).join('')}
+          ${['G2','FNC','KC','MKOI','TH','SHFT','SK','VIT','GX','NAVI'].map(c => `<button class="quick-pill team-quick" data-code="${c}">${c}</button>`).join('')}
         </div>
       </div>`;
     const go = () => {

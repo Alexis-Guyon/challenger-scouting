@@ -1009,10 +1009,17 @@ def team_detail(code: str, db: Session = Depends(get_db)):
                     db.query(RankSnapshot).filter_by(puuid=player.puuid)
                     .order_by(desc(RankSnapshot.snapshot_date)).first()
                 )
+            # The OFFICIAL lolesports name is authoritative — a linked SoloQ
+            # account only supplies CSS/rank/image. PlayerMeta.leaguepedia_id can
+            # be stale/wrong for the same lolesports id (e.g. "Nikolex" vs the
+            # real "Lospa"), so never let it override the roster name.
+            official_name = (lr.player_name or "").strip()
+            if team.code and official_name.upper().startswith(team.code.upper() + " "):
+                official_name = official_name[len(team.code) + 1:].strip()  # "FNC Lospa" → "Lospa"
             roster.append({
                 "puuid": player.puuid if player else None,
                 "summoner_name": player.summoner_name if player else lr.player_name,
-                "leaguepedia_id": (meta.leaguepedia_id if meta else None) or lr.player_name,
+                "leaguepedia_id": official_name or (meta.leaguepedia_id if meta else None),
                 "role": role,
                 "country": meta.country if meta else None,
                 "age": meta.age if meta else None,

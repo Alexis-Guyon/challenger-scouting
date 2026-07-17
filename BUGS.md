@@ -39,20 +39,18 @@ et toute action nécessitant un compte admin.
   **⌘K / Ctrl+K**, clic/Enter → `setView('player'|'team', …)`. Vérifié en local : suggestions
   joueurs + équipe (ex. « G2 » → 1 équipe + 8 joueurs), ⌘K focus, Enter ouvre le profil/l'équipe.
 
-### 2. Layout mobile cassé (media queries obsolètes)
-- **Où** : [style.css:1685+](frontend/style.css#L1685), [style.css:1949](frontend/style.css#L1949),
-  et l'absence de règle responsive sur `.app-grid` ([style.css:130](frontend/style.css#L130)).
-- **Constat** : toutes les `@media` ciblent l'**ancien markup** d'avant la refonte
-  (`header`, `nav`, `.brand`, `.user-menu`, `.filters`) qui **n'existe plus**. La coquille
-  actuelle (`.app-grid`, `.sidebar`, `.topbar`, `.nav-item`, `.filter-card`) n'a **aucune**
-  règle responsive.
-- **Preuve** : en viewport étroit, `.app-grid` reste en `grid-template-columns: 236px 139px`
-  → la sidebar garde 236 px et la colonne de contenu est écrasée à ~139 px. Pas de menu
-  hamburger ni de repli de sidebar.
-- **Impact** : app pratiquement inutilisable sur mobile/tablette.
-- **Piste de correction** : ajouter des `@media` sur le nouveau layout (replier `.sidebar`
-  en barre horizontale scrollable ou derrière un toggle, passer `.app-grid` en une seule
-  colonne sous ~900 px) ; retirer les media queries mortes qui ciblent l'ancien markup.
+### 2. Layout mobile cassé (media queries obsolètes) — ✅ corrigé
+- **Où** : [style.css:1688+](frontend/style.css#L1688) (bloc `@media (max-width: 900px)`).
+- **Constat** : les `@media` ciblaient en partie l'**ancien markup** d'avant la refonte
+  (`header`, `nav`, `.brand`, `.user-menu`) ; le nouveau shell (`.app-grid`, `.sidebar`,
+  `.topbar`) n'avait **aucune** règle responsive. En viewport étroit, `.app-grid` restait en
+  `236px 1fr` → sidebar 236 px + contenu écrasé à ~139 px.
+- **Correctif** : remplacement des règles mortes par des règles pour le nouveau shell
+  (< 900 px) — `.app-grid` en **une seule colonne**, `.sidebar` transformée en **barre de nav
+  horizontale scrollable** (labels/footer masqués, logo conservé), topbar qui passe la
+  recherche en **pleine largeur** sous les boutons. Vérifié à 375 px : contenu **pleine
+  largeur** (375 px au lieu de 139), 0 débordement horizontal de page, nav scrollable
+  (7 items), tables scrollables dans leur conteneur ; desktop (> 900 px) inchangé.
 
 ---
 
@@ -150,7 +148,7 @@ et toute action nécessitant un compte admin.
 | # | Sévérité | Sujet |
 |---|----------|-------|
 | 1 | ✅ Corrigé | Recherche globale du topbar + ⌘K (branchés) |
-| 2 | 🔴 Élevé | Layout mobile cassé (media queries obsolètes) |
+| 2 | ✅ Corrigé | Layout mobile (nouveau shell responsive) |
 | 10 | ✅ Corrigé | Liste d'équipes périmée (BDS→SHFT, KOI→NAVI) |
 | 11 | ✅ Corrigé | Roster : rôles en double / comptes alternatifs |
 | 3 | 🟡 Mineur | 401 inutiles (`/watchlist`, `/notes`) en anonyme |

@@ -1686,25 +1686,35 @@ body:has(.match-modal.open) { overflow: hidden; }
    RESPONSIVE — tablet & phone
    ============================================================ */
 @media (max-width: 900px) {
-  header {
-    flex-wrap: wrap;
-    gap: 10px 12px;
-    padding: 10px 16px;
-  }
-  .brand h1 { font-size: 14px; }
-  .brand .sub { display: none; }
-  nav {
-    width: 100%;
+  /* App shell → single column. The sidebar becomes a horizontally
+     scrollable top nav bar (the fixed 236px column crushed content before). */
+  .app-grid { grid-template-columns: 1fr; }
+  .sidebar {
+    position: static;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    height: auto;
+    padding: 8px 12px;
     overflow-x: auto;
-    flex-wrap: nowrap;
+    overflow-y: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
     scrollbar-width: thin;
     -webkit-overflow-scrolling: touch;
   }
-  nav a { white-space: nowrap; padding: 6px 10px; font-size: 12.5px; }
-  nav a.active::after { display: none; }
-  .user-menu { gap: 8px; }
-  .user-menu .muted { display: none; }
-  .user-menu button { padding: 6px 10px; font-size: 12px; }
+  .sidebar-brand { flex-shrink: 0; padding: 4px 6px; }
+  .sidebar-brand-text { display: none; }        /* keep just the logo */
+  .nav-group { flex-direction: row; gap: 4px; flex-shrink: 0; }
+  .nav-group-label { display: none; }
+  .nav-item { white-space: nowrap; padding: 8px 12px; }
+  .nav-item.active::before { display: none; }    /* left accent bar doesn't fit horizontally */
+  .sidebar-footer { display: none; }
+
+  /* Topbar → search drops to its own full-width row under the buttons. */
+  .topbar { flex-wrap: wrap; padding: 10px 14px; gap: 10px; }
+  .topbar-spacer { display: none; }
+  .topbar-search { order: 5; flex-basis: 100%; max-width: none; }
 
   main { padding: 14px 14px 30px; }
 

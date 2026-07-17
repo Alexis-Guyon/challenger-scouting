@@ -28,19 +28,16 @@ et toute action nécessitant un compte admin.
 
 ## 🔴 Élevé
 
-### 1. La recherche globale du topbar est morte (aucun handler)
-- **Où** : [index.html:125‑127](frontend/index.html#L125) (`#global-search` + `#global-suggest` + badge `⌘K`).
-- **Constat** : taper dans la barre « Search players, teams, matches… » n'affiche **aucune
-  suggestion**, et le raccourci **⌘K** ne fait rien. Aucun `addEventListener` n'est câblé sur
-  `#global-search`/`#global-suggest` dans tout le JS, et il n'existe aucun handler `keydown`
-  pour ⌘K.
-- **Preuve** : l'API `/players/search?q=faker` renvoie bien 3 résultats, et la recherche
-  **interne de Compare** ([views.js:991](frontend/js/views.js#L991)) fonctionne — c'est
-  uniquement la barre du topbar qui n'est pas branchée.
-- **Impact** : élément le plus visible de l'en‑tête, donne l'impression d'être cassé.
-- **Piste de correction** : réutiliser la logique de suggestion de Compare/Player sur
-  `#global-search` (debounce → `/players/search` → rendu dans `#global-suggest` → clic =
-  `setView('player', puuid)`), et ajouter un handler `keydown` (⌘/Ctrl+K → focus).
+### 1. La recherche globale du topbar était morte (aucun handler) — ✅ corrigé
+- **Où** : [index.html:125‑127](frontend/index.html#L125) (`#global-search` + `#global-suggest`
+  + badge `⌘K`) ; handler ajouté dans [ui.js](frontend/js/ui.js) (`initGlobalSearch`).
+- **Constat** : taper dans la barre « Search players, teams, matches… » n'affichait **aucune
+  suggestion**, et le raccourci **⌘K** ne faisait rien. Aucun `addEventListener` n'était câblé.
+- **Correctif** : barre branchée une seule fois au chargement (le topbar vit dans le shell,
+  pas dans une vue) — recherche **joueurs** (`/players/search`, debounce 200 ms) **+ équipes**
+  (match local sur les 10 codes LEC), navigation clavier **↑/↓/Enter/Échap**, focus via
+  **⌘K / Ctrl+K**, clic/Enter → `setView('player'|'team', …)`. Vérifié en local : suggestions
+  joueurs + équipe (ex. « G2 » → 1 équipe + 8 joueurs), ⌘K focus, Enter ouvre le profil/l'équipe.
 
 ### 2. Layout mobile cassé (media queries obsolètes)
 - **Où** : [style.css:1685+](frontend/style.css#L1685), [style.css:1949](frontend/style.css#L1949),
@@ -152,7 +149,7 @@ et toute action nécessitant un compte admin.
 
 | # | Sévérité | Sujet |
 |---|----------|-------|
-| 1 | 🔴 Élevé | Recherche globale du topbar + ⌘K non branchés |
+| 1 | ✅ Corrigé | Recherche globale du topbar + ⌘K (branchés) |
 | 2 | 🔴 Élevé | Layout mobile cassé (media queries obsolètes) |
 | 10 | ✅ Corrigé | Liste d'équipes périmée (BDS→SHFT, KOI→NAVI) |
 | 11 | ✅ Corrigé | Roster : rôles en double / comptes alternatifs |

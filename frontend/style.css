@@ -725,7 +725,10 @@ tr.lb-row:hover .tier-icon { transform: scale(1.08); }
   transition: background 0.1s var(--ease);
 }
 .suggest div:last-child { border-bottom: 0; }
-.suggest div:hover { background: rgba(91,141,239,0.08); }
+.suggest div:hover,
+.suggest div.sel { background: rgba(91,141,239,0.08); }
+/* Global-search rows: label left, type/tier right. */
+.suggest div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .suggest:empty { display: none; }
 
 /* ---------- Bars (radar / progress) ---------- */

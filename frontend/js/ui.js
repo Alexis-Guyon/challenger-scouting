@@ -89,6 +89,96 @@ document.getElementById('browse-guest')?.addEventListener('click', () => {
   else setView('leaderboard');
 });
 
+/* ---------------- GLOBAL SEARCH (topbar) ---------------- */
+// Wired once at load — the topbar lives in the app shell, not in a view.
+// Searches players (via /players/search) and the known LEC teams, with a
+// debounce, keyboard nav (↑/↓/Enter/Esc) and a ⌘K / Ctrl+K focus shortcut.
+(function initGlobalSearch() {
+  const input = document.getElementById('global-search');
+  const box = document.getElementById('global-suggest');
+  if (!input || !box) return;
+
+  // Known LEC teams (mirrors the Teams quick-pills). code → display name.
+  const TEAMS = {
+    G2: 'G2 Esports', FNC: 'Fnatic', KC: 'Karmine Corp', MKOI: 'Movistar KOI',
+    TH: 'Team Heretics', SHFT: 'Shifters', SK: 'SK Gaming', VIT: 'Team Vitality',
+    GX: 'GIANTX', NAVI: 'Natus Vincere',
+  };
+
+  let items = [];   // [{type, id, label, sub}]
+  let sel = -1;
+  let timer = null;
+
+  function clear() { box.innerHTML = ''; items = []; sel = -1; }
+
+  function render() {
+    box.innerHTML = items.map((it, i) => `
+      <div data-i="${i}" class="${i === sel ? 'sel' : ''}">
+        <span>${it.label}</span>
+        <span class="muted" style="font-size:11px;">${it.sub}</span>
+      </div>`).join('');
+    box.querySelectorAll('div').forEach(d =>
+      d.addEventListener('mousedown', e => { e.preventDefault(); activate(+d.dataset.i); }));
+  }
+
+  function activate(i) {
+    const it = items[i];
+    if (!it) return;
+    input.value = '';
+    clear();
+    input.blur();
+    if (it.type === 'player') { window._selectedPuuid = it.id; setView('player', it.id); }
+    else if (it.type === 'team') setView('team', it.id);
+  }
+
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    const q = input.value.trim();
+    if (q.length < 2) { clear(); return; }
+    timer = setTimeout(async () => {
+      // Teams: prefix/substring match on code or name (instant, local).
+      const ql = q.toLowerCase();
+      const teamHits = Object.entries(TEAMS)
+        .filter(([code, name]) => code.toLowerCase().includes(ql) || name.toLowerCase().includes(ql))
+        .slice(0, 3)
+        .map(([code, name]) => ({ type: 'team', id: code, label: name, sub: 'Team' }));
+      // Players: server search.
+      let playerHits = [];
+      try {
+        const data = await API('/players/search?q=' + encodeURIComponent(q));
+        playerHits = data.slice(0, 8).map(p => ({
+          type: 'player', id: p.puuid,
+          label: p.summoner_name || '(unknown)', sub: p.tier || 'Player',
+        }));
+      } catch { /* keep team hits even if the API errors */ }
+      // Ignore stale responses if the query changed while awaiting.
+      if (input.value.trim() !== q) return;
+      items = [...teamHits, ...playerHits];
+      sel = -1;
+      render();
+    }, 200);
+  });
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); if (items.length) { sel = (sel + 1) % items.length; render(); } }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); if (items.length) { sel = (sel - 1 + items.length) % items.length; render(); } }
+    else if (e.key === 'Enter') { e.preventDefault(); activate(sel >= 0 ? sel : 0); }
+    else if (e.key === 'Escape') { clear(); input.blur(); }
+  });
+
+  // Clear when focus leaves the search (after a click has had time to register).
+  input.addEventListener('blur', () => setTimeout(clear, 150));
+
+  // ⌘K / Ctrl+K focuses the search from anywhere.
+  document.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault();
+      input.focus();
+      input.select();
+    }
+  });
+})();
+
 /* ---------------- GLOSSARY ---------------- */
 const GLOSSARY = {
   "Scoring": [

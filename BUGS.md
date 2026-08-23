@@ -129,11 +129,10 @@ et toute action nécessitant un compte admin.
 
 ## 🔵 À confirmer (décisions, pas des bugs)
 
-### 8. Site public mais `noindex` + `robots: Disallow`
-- `robots.txt` (`Disallow: /`) et `<meta name="robots" content="noindex, nofollow">` sont
-  toujours actifs. Volontaire (clé **Riot Personal Key**), mais à confirmer si tu veux que le
-  site soit **référencé**. ⚠️ Rappel : les conditions d'une **Personal API Key** restreignent
-  l'usage public — une **Production Key** serait plus carrée pour un site accessible à tous.
+### 8. Site public et indexation
+- Décision confirmée le 24 août 2026 : l'accès public en lecture seule doit être référencé.
+- `robots.txt`, la meta robots, la canonical et le sitemap autorisent désormais l'indexation.
+- ⚠️ Une **Production Key** reste recommandée pour un service accessible au public.
 
 ### 9. Config `SCOUTING_API_BASE` obsolète
 - **Où** : script inline [index.html:38‑45](frontend/index.html#L38).
